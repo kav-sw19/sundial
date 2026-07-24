@@ -249,6 +249,13 @@ computed locally.
 
 ---
 
+## License
+
+[MIT](LICENSE) — do whatever you like with it: use it, fork it, modify it, share it. No warranty.
+If you fork it, feel free to put your own name on your copy.
+
+---
+
 <div align="center">
 
 *Made to be watched once, at the end.* 🌇
