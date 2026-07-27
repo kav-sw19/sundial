@@ -223,8 +223,55 @@ function svgIcon(name) {
     lock: '<path fill="currentColor" d="M6 10V8a6 6 0 1112 0v2h1a1 1 0 011 1v9a1 1 0 01-1 1H5a1 1 0 01-1-1v-9a1 1 0 011-1h1zm2 0h8V8a4 4 0 10-8 0v2z"/>',
     close: '<path fill="currentColor" d="M6.4 5L5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12 19 6.4 17.6 5 12 10.6z"/>',
     flip: '<path fill="currentColor" d="M12 6V3L8 7l4 4V8a5 5 0 11-5 5H5a7 7 0 107-7z"/>',
+    expand: '<path fill="currentColor" d="M4 9V4h5v2H6v3H4zm11-5h5v5h-2V6h-3V4zM6 15v3h3v2H4v-5h2zm12 0h2v5h-5v-2h3v-3z"/>',
+    edit: '<path fill="currentColor" d="M3 17.25V21h3.75L17.8 9.94l-3.75-3.75L3 17.25zM20.7 7.04a1 1 0 000-1.41l-2.34-2.34a1 1 0 00-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/>',
   };
   return `<svg viewBox="0 0 24 24" aria-hidden="true">${p[name] || ""}</svg>`;
+}
+
+/* wrap a string to N canvas lines, ellipsising the overflow */
+function wrapText(ctx, text, maxWidth, maxLines) {
+  const words = text.split(/\s+/).filter(Boolean);
+  const lines = [];
+  let cur = "";
+  for (const w of words) {
+    const test = cur ? `${cur} ${w}` : w;
+    if (ctx.measureText(test).width > maxWidth && cur) {
+      lines.push(cur); cur = w;
+      if (lines.length === maxLines) break;
+    } else { cur = test; }
+  }
+  if (lines.length < maxLines && cur) lines.push(cur);
+  // if there was more text than fits, mark the last line with an ellipsis
+  const consumed = lines.join(" ").split(/\s+/).length;
+  if (consumed < words.length && lines.length) {
+    let last = lines[lines.length - 1];
+    while (last && ctx.measureText(`${last}…`).width > maxWidth) last = last.slice(0, -1);
+    lines[lines.length - 1] = `${last}…`;
+  }
+  return lines;
+}
+
+/* escape user text before it touches innerHTML (captions) */
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+/* build the ambient one-liner shared by home cards, viewer & film */
+function ambientLine(meta) {
+  const m = meta || {};
+  return [
+    m.tempC != null ? `${m.weatherGlyph || ""} ${m.tempC}°`.trim() : (m.weatherText || ""),
+    m.city, m.moon ? `${m.moon.glyph} ${m.moon.name}` : "",
+  ].filter(Boolean).join("   ·   ");
+}
+
+/* persist / amend a caption without disturbing the sealed image */
+async function saveCaption(dateKey, text) {
+  const rec = await DB.getPhoto(dateKey);
+  if (!rec) return;
+  rec.caption = (text || "").trim();
+  await DB.putPhoto(rec);
 }
 
 /* ================================================================ RENDER ROOT */
@@ -298,11 +345,16 @@ async function renderHome() {
     const m = lastYear.meta || {};
     const bits = [m.weatherGlyph && `${m.weatherGlyph} ${m.tempC != null ? m.tempC + "°" : ""}`, m.city, m.moon?.glyph].filter(Boolean).join("  ·  ");
     ly.innerHTML = `
-      <div class="lastyear">
+      <button class="lastyear" id="lyCard" aria-label="View last year's photo">
         <span class="ly-label">One year ago today</span>
+        <span class="ly-expand">${svgIcon("expand")}</span>
         <img class="ly-img" src="${url}" alt="Your photo from a year ago" />
-        ${bits ? `<div class="ly-meta">${bits}</div>` : ""}
-      </div>`;
+        <div class="ly-meta">
+          ${lastYear.caption ? `<p class="ly-cap">${escapeHtml(lastYear.caption)}</p>` : ""}
+          ${bits ? `<div class="ly-bits">${bits}</div>` : ""}
+        </div>
+      </button>`;
+    $("#lyCard").onclick = () => openViewer(lastYear, { kicker: "One year ago", editable: true });
   } else if (!shotToday) {
     ly.innerHTML = `<div class="lastyear"><div class="ly-empty"><div><div style="font-size:26px">🌱</div><p class="tiny" style="margin-top:8px">A year from now, today's shot will greet you here.</p></div></div></div>`;
   }
@@ -312,13 +364,22 @@ async function renderHome() {
     const url = URL.createObjectURL(shotToday.blob);
     core.innerHTML = `
       <div class="done-state">
-        <img class="done-thumb" src="${url}" alt="Today's photo"/>
+        <button class="done-thumb-wrap" id="viewToday" aria-label="View today's photo">
+          <img class="done-thumb" src="${url}" alt="Today's photo"/>
+          <span class="done-expand">${svgIcon("expand")}</span>
+        </button>
         <h2 style="font-size:19px">That's today.</h2>
+        ${shotToday.caption
+          ? `<p class="done-cap">"${escapeHtml(shotToday.caption)}"</p>`
+          : ""}
         <p class="muted tiny" style="max-width:280px">${sealMessage()}</p>
         <div style="display:flex;gap:10px;margin-top:6px">
+          <button class="btn ghost" id="capBtn">${shotToday.caption ? "Edit caption" : "Add caption"}</button>
           <button class="btn ghost" id="save">Save to Photos</button>
         </div>
       </div>`;
+    $("#viewToday").onclick = () => openViewer(shotToday, { kicker: "Today", editable: true });
+    $("#capBtn").onclick = () => openViewer(shotToday, { kicker: "Today", editable: true });
     $("#save").onclick = async () => {
       const ok = await saveToGallery(shotToday.blob, shotToday.date);
       if (ok) toast("Sent to the share sheet — tap Save Image");
@@ -478,19 +539,93 @@ async function commitShot() {
   panel.className = "commit";
   panel.innerHTML = `
     <p class="warn">Kept. This is <b>${prettyDate(new Date())}</b>.<br><span class="tiny" style="opacity:.8">Sealed into your year. No retakes.</span></p>
+    <textarea class="commit-cap" id="commitCap" maxlength="180" rows="2" placeholder="Add a caption (optional)…"></textarea>
     <div class="row">
       <button class="btn ghost" id="gallery">Save to Photos</button>
       <button class="btn primary" id="done">Done</button>
     </div>`;
   $("#capture").appendChild(panel);
   $("#gallery").onclick = async () => { const ok = await saveToGallery(blob, dateKey); if (ok) toast("Tap Save Image in the share sheet"); };
-  $("#done").onclick = () => { closeCapture(); render(); };
+  $("#done").onclick = async () => {
+    const text = $("#commitCap")?.value.trim();
+    if (text) await saveCaption(dateKey, text);
+    closeCapture(); render();
+  };
 }
 
 function closeCapture() {
   if (stream) stream.getTracks().forEach((t) => t.stop());
   stream = null;
   $("#capture")?.remove();
+}
+
+/* ---------------------------------------------------------------- FULL-SCREEN VIEWER */
+// Opens a single photo full-bleed with its date, ambient meta and caption.
+// `opts.editable` (default true) lets the caption be added or amended in place.
+// `opts.kicker` overrides the small label above the date (e.g. "One year ago").
+function openViewer(rec, opts = {}) {
+  if (!rec || !rec.blob) return;
+  const editable = opts.editable !== false;
+  const d = parseKey(rec.date);
+  const url = URL.createObjectURL(rec.blob);
+  const bits = ambientLine(rec.meta);
+
+  const el = document.createElement("div");
+  el.className = "viewer"; el.id = "viewer";
+  el.innerHTML = `
+    <img class="v-img" src="${url}" alt="Your photo from ${escapeHtml(shortDate(d))}" />
+    <div class="v-top">
+      <button class="iconbtn glass" id="vClose" aria-label="Close">${svgIcon("close")}</button>
+      <div class="v-date"><span class="kicker">${escapeHtml(opts.kicker || "Captured")}</span><b>${prettyDate(d)}</b></div>
+      <span style="width:42px"></span>
+    </div>
+    <div class="v-bottom">
+      ${bits ? `<div class="v-meta">${bits}</div>` : ""}
+      <div class="v-cap" id="vCap"></div>
+    </div>`;
+  document.body.appendChild(el);
+
+  const close = () => { el.classList.add("out"); setTimeout(() => { el.remove(); URL.revokeObjectURL(url); }, 180); render(); };
+  $("#vClose", el).onclick = close;
+  el.addEventListener("click", (e) => { if (e.target === el || e.target.classList.contains("v-img")) close(); });
+
+  renderCaption($("#vCap", el), rec, editable);
+}
+
+// Caption sub-component: a read view with a pencil, and an inline edit view.
+function renderCaption(host, rec, editable) {
+  const cap = rec.caption || "";
+  function showRead() {
+    if (!cap && !editable) { host.innerHTML = ""; return; }
+    host.innerHTML = cap
+      ? `<div class="cap-read"><p class="cap-text">${escapeHtml(cap)}</p>${editable ? `<button class="cap-pencil" aria-label="Edit caption">${svgIcon("edit")}</button>` : ""}</div>`
+      : `<button class="cap-add">${svgIcon("edit")} Add a caption</button>`;
+    if (editable) {
+      const trigger = host.querySelector(".cap-pencil") || host.querySelector(".cap-add");
+      if (trigger) trigger.onclick = showEdit;
+    }
+  }
+  function showEdit() {
+    host.innerHTML = `
+      <div class="cap-edit">
+        <textarea class="cap-input" maxlength="180" rows="2" placeholder="A word about today…">${escapeHtml(rec.caption || "")}</textarea>
+        <div class="cap-actions">
+          <button class="btn ghost sm" data-act="cancel">Cancel</button>
+          <button class="btn primary sm" data-act="save">Save</button>
+        </div>
+      </div>`;
+    const ta = host.querySelector(".cap-input");
+    ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length);
+    host.querySelector('[data-act="cancel"]').onclick = () => { renderCaption(host, rec, editable); };
+    host.querySelector('[data-act="save"]').onclick = async () => {
+      const text = ta.value.trim();
+      await saveCaption(rec.date, text);
+      rec.caption = text;
+      toast(text ? "Caption saved" : "Caption cleared");
+      renderCaption(host, rec, editable);
+    };
+  }
+  showRead();
 }
 
 /* ---------------------------------------------------------------- FILM / SEALED */
@@ -589,22 +724,41 @@ async function playFilm() {
       ctx.textAlign = "center";
       ctx.fillText(shortDate(day.d), W / 2, H / 2);
     }
-    // subtle ambient overlays
+    // subtle ambient overlays — date, caption & metadata, stacked bottom-up
     if (overlayAlpha > 0.02) {
-      const m = day.rec?.meta || {};
+      const PAD = 46;
+      const caption = (day.rec?.caption || "").trim();
+      const line = ambientLine(day.rec?.meta);
       ctx.textAlign = "left";
+      ctx.font = "500 32px -apple-system, system-ui, sans-serif";
+      const capLines = caption ? wrapText(ctx, caption, W - PAD * 2, 3) : [];
+
+      // measure the block height so the gradient always fits it
+      const blockH = 40 /*date*/ + (capLines.length ? 14 + capLines.length * 42 : 0) + (line ? 44 : 0);
+      const gradH = blockH + 90;
       ctx.globalAlpha = overlayAlpha;
-      const grd = ctx.createLinearGradient(0, H - 220, 0, H);
-      grd.addColorStop(0, "rgba(0,0,0,0)"); grd.addColorStop(1, "rgba(0,0,0,.55)");
-      if (bmp) { ctx.fillStyle = grd; ctx.fillRect(0, H - 220, W, 220); }
-      ctx.fillStyle = "rgba(255,255,255,.92)";
+      if (bmp) {
+        const grd = ctx.createLinearGradient(0, H - gradH, 0, H);
+        grd.addColorStop(0, "rgba(0,0,0,0)"); grd.addColorStop(1, "rgba(0,0,0,.62)");
+        ctx.fillStyle = grd; ctx.fillRect(0, H - gradH, W, gradH);
+      }
+
+      let baseline = H - 58;
+      if (line) {
+        ctx.font = "500 26px -apple-system, system-ui, sans-serif";
+        ctx.fillStyle = "rgba(255,255,255,.82)";
+        ctx.fillText(line, PAD, baseline);
+        baseline -= 44;
+      }
+      if (capLines.length) {
+        ctx.font = "500 32px -apple-system, system-ui, sans-serif";
+        ctx.fillStyle = "rgba(255,255,255,.96)";
+        for (let k = capLines.length - 1; k >= 0; k--) { ctx.fillText(capLines[k], PAD, baseline); baseline -= 42; }
+        baseline -= 14;
+      }
       ctx.font = "600 34px -apple-system, system-ui, sans-serif";
-      ctx.fillText(`${day.d.getDate()} ${MONTHS[day.d.getMonth()]}`, 46, H - 116);
-      const line = [
-        m.tempC != null ? `${m.weatherGlyph || ""} ${m.tempC}°` : (m.weatherText || ""),
-        m.city, m.moon ? `${m.moon.glyph} ${m.moon.name}` : "",
-      ].filter(Boolean).join("   ·   ");
-      if (line) { ctx.font = "500 26px -apple-system, system-ui, sans-serif"; ctx.fillStyle = "rgba(255,255,255,.8)"; ctx.fillText(line, 46, H - 70); }
+      ctx.fillStyle = "rgba(255,255,255,.92)";
+      ctx.fillText(`${day.d.getDate()} ${MONTHS[day.d.getMonth()]}`, PAD, baseline);
       ctx.globalAlpha = 1;
     }
   }
