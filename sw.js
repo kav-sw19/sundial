@@ -1,5 +1,5 @@
 // Sundial service worker — offline app shell. Photos live in IndexedDB, never here.
-const CACHE = "sundial-v2";
+const CACHE = "sundial-v3";
 const SHELL = [
   "./",
   "./index.html",
@@ -12,7 +12,15 @@ const SHELL = [
 ];
 
 self.addEventListener("install", (e) => {
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  // Precache the shell but DON'T auto-activate: a new worker waits until the
+  // page tells it to take over (via the SKIP_WAITING message below), so the
+  // update surfaces as a "Reload" prompt instead of a silent swap.
+  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)));
+});
+
+// The page posts this when the user taps "Reload" on the update banner.
+self.addEventListener("message", (e) => {
+  if (e.data && e.data.type === "SKIP_WAITING") self.skipWaiting();
 });
 
 self.addEventListener("activate", (e) => {

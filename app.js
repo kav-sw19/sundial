@@ -557,6 +557,7 @@ function closeCapture() {
   if (stream) stream.getTracks().forEach((t) => t.stop());
   stream = null;
   $("#capture")?.remove();
+  renderUpdateBanner();
 }
 
 /* ---------------------------------------------------------------- FULL-SCREEN VIEWER */
@@ -700,7 +701,7 @@ async function playFilm() {
     </div>`;
   document.body.appendChild(el);
   const canvas = $("#stage"), ctx = canvas.getContext("2d");
-  $("#pClose").onclick = () => { stopPlay = true; el.remove(); };
+  $("#pClose").onclick = () => { stopPlay = true; el.remove(); renderUpdateBanner(); };
 
   // preload images (decode blobs to bitmaps)
   const bitmaps = await Promise.all(days.map(async (d) => {
@@ -887,14 +888,53 @@ function showNotifHelp() {
   $("#ok", bg).onclick = () => bg.remove();
 }
 
+/* ---------------------------------------------------------------- update banner */
+// Surfaces a waiting service worker as a tap-to-reload prompt. We hold the
+// worker aside and only render the banner when the camera/film aren't open,
+// so an update never covers the shutter mid-shot.
+let pendingWorker = null;
+function offerUpdate(worker) { pendingWorker = worker; renderUpdateBanner(); }
+function renderUpdateBanner() {
+  if (!pendingWorker || document.getElementById("updateBanner")) return;
+  if ($("#capture") || $("#player")) return; // wait until the overlay closes
+  const b = document.createElement("div");
+  b.className = "update-banner"; b.id = "updateBanner";
+  b.innerHTML = `<span>A new version is ready.</span><button class="ub-btn">Reload</button>`;
+  document.body.appendChild(b);
+  b.querySelector(".ub-btn").onclick = () => {
+    b.querySelector(".ub-btn").textContent = "Updating…";
+    updateAccepted = true;
+    pendingWorker.postMessage({ type: "SKIP_WAITING" }); // → controllerchange → reload
+  };
+}
+let updateAccepted = false;
+
 /* ---------------------------------------------------------------- boot */
 async function boot() {
   await State.load();
   await render();
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("sw.js").catch(() => {});
+    navigator.serviceWorker.register("sw.js").then((reg) => {
+      // an update that finished installing on a previous visit
+      if (reg.waiting && navigator.serviceWorker.controller) offerUpdate(reg.waiting);
+      reg.addEventListener("updatefound", () => {
+        const nw = reg.installing;
+        if (!nw) return;
+        nw.addEventListener("statechange", () => {
+          if (nw.state === "installed" && navigator.serviceWorker.controller) offerUpdate(nw);
+        });
+      });
+    }).catch(() => {});
+    // once the worker the user accepted takes control, load its fresh assets
+    // (guarded so the first-visit clients.claim() doesn't trigger a reload)
+    let refreshing = false;
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      if (!updateAccepted || refreshing) return; refreshing = true; location.reload();
+    });
   }
   // refresh when returning to the app (new day, window shrank, etc.)
-  document.addEventListener("visibilitychange", () => { if (!document.hidden && !$("#capture") && !$("#player")) render(); });
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && !$("#capture") && !$("#player")) { render(); renderUpdateBanner(); }
+  });
 }
 boot();
