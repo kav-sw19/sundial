@@ -274,6 +274,26 @@ async function saveCaption(dateKey, text) {
   await DB.putPhoto(rec);
 }
 
+/* a warm time-of-day greeting for the home header */
+function greeting(d = new Date()) {
+  const h = d.getHours();
+  if (h < 5) return "Late night";
+  if (h < 12) return "Good morning";
+  if (h < 17) return "Good afternoon";
+  if (h < 22) return "Good evening";
+  return "Good night";
+}
+
+/* a light haptic tick on meaningful taps (Android; a no-op on iOS Safari) */
+function haptic(ms = 8) { try { navigator.vibrate?.(ms); } catch {} }
+
+/* wire Escape to close any overlay; returns a detach fn to call on close */
+function onEscape(cb) {
+  const h = (e) => { if (e.key === "Escape") cb(); };
+  document.addEventListener("keydown", h);
+  return () => document.removeEventListener("keydown", h);
+}
+
 /* ================================================================ RENDER ROOT */
 let view = "home";
 async function render() {
@@ -321,7 +341,7 @@ async function renderHome() {
   <div class="screen" id="home">
     <div class="topbar">
       <div class="date">
-        <span class="kicker">Today</span>
+        <span class="kicker">${greeting(now)}</span>
         <b>${prettyDate(now)}</b>
       </div>
       <div style="display:flex;gap:10px">
@@ -402,7 +422,7 @@ async function renderHome() {
         <button class="shutter" id="shutter">Take today's photo</button>
         <p class="tiny faint">One tap. No retakes.</p>
       </div>`;
-    $("#shutter").onclick = openCapture;
+    $("#shutter").onclick = () => { haptic(6); openCapture(); };
     tickWindow();
     homeTimer = setInterval(tickWindow, 1000);
   }
@@ -503,6 +523,7 @@ async function commitShot() {
   const video = $("#cam"), snap = $("#snap");
   if (!video?.videoWidth) return;
   snap.disabled = true;
+  haptic(16);
 
   // grab the exact frame at native resolution
   const vw = video.videoWidth, vh = video.videoHeight;
@@ -586,7 +607,9 @@ function openViewer(rec, opts = {}) {
     </div>`;
   document.body.appendChild(el);
 
-  const close = () => { el.classList.add("out"); setTimeout(() => { el.remove(); URL.revokeObjectURL(url); }, 180); render(); };
+  let offEsc;
+  const close = () => { offEsc?.(); el.classList.add("out"); setTimeout(() => { el.remove(); URL.revokeObjectURL(url); }, 180); render(); };
+  offEsc = onEscape(close);
   $("#vClose", el).onclick = close;
   el.addEventListener("click", (e) => { if (e.target === el || e.target.classList.contains("v-img")) close(); });
 
@@ -622,6 +645,7 @@ function renderCaption(host, rec, editable) {
       const text = ta.value.trim();
       await saveCaption(rec.date, text);
       rec.caption = text;
+      haptic(6);
       toast(text ? "Caption saved" : "Caption cleared");
       renderCaption(host, rec, editable);
     };
@@ -838,11 +862,11 @@ async function openSettings() {
       </div>
       <div class="settings-row">
         <div><div class="lbl">Show the year strip</div><div class="sub">Dots for shot & missed days on the home screen</div></div>
-        <button class="pill ${s.showStrip ? "on" : ""}" id="strip">${s.showStrip ? "On" : "Off"}</button>
+        <button class="switch ${s.showStrip ? "on" : ""}" role="switch" aria-checked="${s.showStrip}" aria-label="Show the year strip" id="setStrip"><span class="knob"></span></button>
       </div>
       <div class="settings-row">
         <div><div class="lbl">Preview the film early</div><div class="sub">Breaks the seal — for testing only</div></div>
-        <button class="pill ${s.devPreview ? "on" : ""}" id="dev">${s.devPreview ? "On" : "Off"}</button>
+        <button class="switch ${s.devPreview ? "on" : ""}" role="switch" aria-checked="${s.devPreview}" aria-label="Preview the film early" id="setDev"><span class="knob"></span></button>
       </div>
       <div class="settings-row" style="border:none">
         <div><div class="lbl faint tiny">Year mode</div><div class="sub">${CONFIG.YEAR_MODE === "rolling" ? "365 days from your first photo" : "Calendar year · reveals Dec 31"}</div></div>
@@ -851,11 +875,15 @@ async function openSettings() {
       <p class="tiny faint" style="text-align:center;margin-top:14px">Made to be watched once, at the end.</p>
     </div>`;
   document.body.appendChild(bg);
-  const close = () => bg.remove();
+  let offEsc;
+  const close = () => { offEsc?.(); bg.remove(); };
+  offEsc = onEscape(close);
   bg.onclick = (e) => { if (e.target === bg) close(); };
   $("#close", bg).onclick = close;
-  $("#strip", bg).onclick = async () => { s.showStrip = !s.showStrip; await State.save(); close(); render(); };
-  $("#dev", bg).onclick = async () => { s.devPreview = !s.devPreview; await State.save(); toast(s.devPreview ? "Seal broken (preview on)" : "Seal restored"); close(); render(); };
+  // toggles flip in place (the sheet stays open) and re-render home behind it
+  const flip = (btn, on) => { btn.classList.toggle("on", on); btn.setAttribute("aria-checked", on); haptic(6); };
+  $("#setStrip", bg).onclick = async () => { s.showStrip = !s.showStrip; flip($("#setStrip", bg), s.showStrip); await State.save(); render(); };
+  $("#setDev", bg).onclick = async () => { s.devPreview = !s.devPreview; flip($("#setDev", bg), s.devPreview); toast(s.devPreview ? "Seal broken (preview on)" : "Seal restored"); await State.save(); render(); };
   $("#notif", bg).onclick = async () => {
     if ("Notification" in window) {
       const perm = await Notification.requestPermission();
