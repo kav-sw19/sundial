@@ -410,13 +410,19 @@ async function renderHome() {
       <div class="window" id="win">
         <div class="ring-wrap">
           <svg viewBox="0 0 120 120">
-            <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
-              <stop offset="0" stop-color="#ffd27a"/><stop offset="1" stop-color="#ff8a3d"/>
-            </linearGradient></defs>
+            <defs>
+              <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0" stop-color="#ffd27a"/><stop offset="1" stop-color="#ff8a3d"/>
+              </linearGradient>
+            </defs>
             <circle class="ring-bg" cx="60" cy="60" r="52"/>
             <circle class="ring-fg" id="ringFg" cx="60" cy="60" r="52"/>
+            <circle class="ring-tip" id="ringTip" cx="60" cy="8" r="5"/>
           </svg>
-          <div class="ring-center"><div class="left" id="left">–</div><div class="lbl">left today</div></div>
+          <div class="ring-center">
+            <div class="rc-time" id="left">–</div>
+            <div class="lbl">left today</div>
+          </div>
         </div>
         <p class="muted tiny" id="wintext" style="text-align:center;max-width:280px"></p>
         <button class="shutter" id="shutter">Take today's photo</button>
@@ -455,23 +461,36 @@ function sealMessage() {
 }
 
 function tickWindow() {
-  const left = $("#left"), ring = $("#ringFg"), txt = $("#wintext"), win = $("#win");
+  const left = $("#left"), ring = $("#ringFg"), tip = $("#ringTip"), txt = $("#wintext"), win = $("#win");
   if (!left) return;
   const now = new Date();
   const mid = nextMidnight();
   const msLeft = mid - now;
   const hrs = Math.floor(msLeft / 3600000);
   const mins = Math.floor((msLeft % 3600000) / 60000);
-  left.textContent = hrs >= 1 ? `${hrs}h` : `${mins}m`;
+  const secs = Math.floor((msLeft % 60000) / 1000);
+
+  // adaptive, live readout — seconds surface only in the final hour so it feels
+  // calm through the day and quietly urgent as the window closes.
+  left.textContent = hrs >= 1 ? `${hrs}h ${pad(mins)}m` : mins >= 1 ? `${mins}m ${pad(secs)}s` : `${secs}s`;
+
   const frac = msLeft / DAY_MS; // portion of a full day remaining
-  const C = 2 * Math.PI * 52;
+  const R = 52, C = 2 * Math.PI * R;
   ring.style.strokeDasharray = C;
   ring.style.strokeDashoffset = C * (1 - frac);
-  // colour + urgency as the day burns down
-  if (hrs < 1) { ring.style.stroke = "var(--danger)"; win.classList.add("urgent"); txt.textContent = `Under an hour before today locks forever — ${mins} min left.`; }
-  else if (hrs < 3) { win.classList.add("urgent"); txt.textContent = `The window is closing — ${hrs}h ${mins}m until midnight.`; }
-  else if (hrs < 8) { win.classList.remove("urgent"); txt.textContent = `A quiet part of the day. ${hrs} hours left to capture it.`; }
-  else { win.classList.remove("urgent"); txt.textContent = `Plenty of day ahead. Wait for the moment that matters.`; }
+
+  // sun marker rides the leading edge of the arc (the shadow tip of the dial)
+  const a = 2 * Math.PI * frac;
+  if (tip) { tip.setAttribute("cx", (60 + R * Math.cos(a)).toFixed(2)); tip.setAttribute("cy", (60 + R * Math.sin(a)).toFixed(2)); }
+
+  // layered urgency: calm → urgent (<3h) → critical (<1h)
+  win.classList.toggle("urgent", hrs < 3);
+  win.classList.toggle("critical", hrs < 1);
+  ring.style.stroke = hrs < 1 ? "var(--danger)" : "url(#g)";
+  if (hrs < 1) txt.textContent = `Under an hour before today locks forever — ${mins}m ${pad(secs)}s left.`;
+  else if (hrs < 3) txt.textContent = `The window is closing — ${hrs}h ${pad(mins)}m until midnight.`;
+  else if (hrs < 8) txt.textContent = `A quiet part of the day. ${hrs} hours left to capture it.`;
+  else txt.textContent = `Plenty of day ahead. Wait for the moment that matters.`;
 }
 
 /* ---------------------------------------------------------------- CAPTURE */

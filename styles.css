@@ -102,13 +102,38 @@ button.lastyear:active { transform: scale(.985); }
 
 /* shrinking window ring */
 .window { margin-top: auto; display: flex; flex-direction: column; align-items: center; gap: 16px; padding-top: 26px; }
-.ring-wrap { position: relative; width: 132px; height: 132px; }
-.ring-wrap svg { transform: rotate(-90deg); width: 100%; height: 100%; }
-.ring-bg { fill: none; stroke: #1b2130; stroke-width: 8; }
-.ring-fg { fill: none; stroke: url(#g); stroke-width: 8; stroke-linecap: round; transition: stroke-dashoffset 1s linear; }
+.ring-wrap { position: relative; width: 150px; height: 150px; }
+/* soft warm hearth glow behind the dial */
+.ring-wrap::before {
+  content: ""; position: absolute; inset: 14px; border-radius: 50%;
+  background: radial-gradient(circle at 50% 46%, rgba(255,154,61,.16), transparent 68%);
+  transition: opacity .4s ease;
+}
+.ring-wrap svg { transform: rotate(-90deg); width: 100%; height: 100%; overflow: visible; }
+.ring-bg { fill: none; stroke: #1b2130; stroke-width: 7; }
+.ring-fg {
+  fill: none; stroke: url(#g); stroke-width: 7; stroke-linecap: round;
+  transition: stroke-dashoffset 1s linear, stroke .5s ease;
+  filter: drop-shadow(0 0 4px rgba(255,154,61,.45));
+}
+.ring-tip {
+  fill: #fff; stroke: rgba(160,90,20,.35); stroke-width: 1;
+  filter: drop-shadow(0 0 6px var(--sun-hot));
+  transition: cx .9s linear, cy .9s linear, fill .5s ease;
+}
 .ring-center { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; }
-.ring-center .left { font-size: 22px; font-weight: 700; letter-spacing: -.02em; }
-.ring-center .lbl { font-size: 10.5px; color: var(--ink-faint); letter-spacing: .12em; text-transform: uppercase; margin-top: 2px; }
+.ring-center .rc-time {
+  font-size: 23px; font-weight: 700; letter-spacing: -.01em;
+  font-variant-numeric: tabular-nums; color: var(--ink);
+}
+.ring-center .lbl { font-size: 10.5px; color: var(--ink-faint); letter-spacing: .12em; text-transform: uppercase; margin-top: 3px; }
+
+/* critical (<1h): the dial turns and breathes */
+.critical .ring-wrap::before { background: radial-gradient(circle at 50% 46%, rgba(255,107,94,.24), transparent 66%); animation: ringPulse 1.6s ease-in-out infinite; }
+.critical .ring-tip { fill: #fff; stroke: rgba(120,20,15,.4); filter: drop-shadow(0 0 8px var(--danger)); }
+.critical .ring-fg { filter: drop-shadow(0 0 7px rgba(255,107,94,.6)); }
+.critical .rc-time { color: var(--danger); }
+@keyframes ringPulse { 0%,100% { opacity: .55; } 50% { opacity: 1; } }
 
 .shutter {
   width: 100%; margin-top: 6px;

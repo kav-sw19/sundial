@@ -1,5 +1,5 @@
 // Sundial service worker — offline app shell. Photos live in IndexedDB, never here.
-const CACHE = "sundial-v4";
+const CACHE = "sundial-v5";
 const SHELL = [
   "./",
   "./index.html",
