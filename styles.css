@@ -190,7 +190,20 @@ button.lastyear:active { transform: scale(.985); }
 }
 .shutter-btn:active { transform: scale(.9); }
 .shutter-btn[disabled] { opacity: .5; }
-.flip { position: absolute; right: 24px; bottom: calc(var(--safe-bottom) + 54px); width: 46px; height: 46px; border-radius: 50%; background: rgba(0,0,0,.4); display: grid; place-items: center; color: #fff; z-index: 3; }
+/* shutter row: spacer · shutter (centered) · flip */
+.cap-actionbar { display: flex; align-items: center; justify-content: space-between; width: 100%; max-width: 340px; }
+.cap-slot { width: 54px; height: 54px; }
+.flip-btn { width: 54px; height: 54px; border-radius: 50%; background: rgba(255,255,255,.14); backdrop-filter: blur(8px); display: grid; place-items: center; color: #fff; transition: transform .14s ease, background .15s ease; }
+.flip-btn svg { width: 22px; height: 22px; }
+.flip-btn:active { transform: scale(.9) rotate(-18deg); }
+@media (hover: hover) { .flip-btn:hover { background: rgba(255,255,255,.24); } }
+
+/* lens / zoom pills (0.5× · 1×) — iOS-camera style */
+.lens-row { display: inline-flex; gap: 4px; padding: 5px; border-radius: 999px; background: rgba(0,0,0,.35); backdrop-filter: blur(10px); }
+.lens-row[hidden] { display: none; }
+.lens-pill { min-width: 42px; height: 34px; padding: 0 12px; border-radius: 999px; color: rgba(255,255,255,.82); font-size: 13px; font-weight: 700; letter-spacing: -.01em; display: grid; place-items: center; transition: background .15s ease, color .15s ease, transform .12s ease; }
+.lens-pill.on { background: rgba(255,255,255,.22); color: var(--sun-hot); }
+.lens-pill:active { transform: scale(.92); }
 .flash { position: fixed; inset: 0; background: #fff; z-index: 60; opacity: 0; pointer-events: none; }
 .flash.go { animation: flash .5s ease; }
 @keyframes flash { 0% { opacity: .9; } 100% { opacity: 0; } }

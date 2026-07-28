@@ -128,8 +128,25 @@ const DB = (() => {
       t.onabort = () => rej(t.error);
     });
   }
+  // read-modify-write inside ONE transaction. IndexedDB serialises overlapping
+  // readwrite transactions, so concurrent updaters (caption + ambient meta)
+  // can't clobber each other's fields.
+  function updatePhoto(date, mutate) {
+    return new Promise((res, rej) => {
+      open().then((db) => {
+        const t = db.transaction("photos", "readwrite");
+        const s = t.objectStore("photos");
+        const g = s.get(date);
+        g.onsuccess = () => { const rec = g.result; if (rec) { mutate(rec); s.put(rec); } };
+        t.oncomplete = () => res(g.result);
+        t.onerror = () => rej(t.error);
+        t.onabort = () => rej(t.error);
+      }).catch(rej);
+    });
+  }
   return {
     putPhoto: (rec) => tx("photos", "readwrite", (s) => s.put(rec)),
+    updatePhoto,
     getPhoto: (date) => tx("photos", "readonly", (s) => s.get(date)),
     allPhotos: () => tx("photos", "readonly", (s) => s.getAll()),
     hasPhoto: async (date) => !!(await tx("photos", "readonly", (s) => s.getKey(date))),
@@ -266,12 +283,9 @@ function ambientLine(meta) {
   ].filter(Boolean).join("   ·   ");
 }
 
-/* persist / amend a caption without disturbing the sealed image */
+/* persist / amend a caption without disturbing the sealed image or ambient meta */
 async function saveCaption(dateKey, text) {
-  const rec = await DB.getPhoto(dateKey);
-  if (!rec) return;
-  rec.caption = (text || "").trim();
-  await DB.putPhoto(rec);
+  await DB.updatePhoto(dateKey, (rec) => { rec.caption = (text || "").trim(); });
 }
 
 /* a warm time-of-day greeting for the home header */
@@ -474,13 +488,14 @@ function tickWindow() {
   // calm through the day and quietly urgent as the window closes.
   left.textContent = hrs >= 1 ? `${hrs}h ${pad(mins)}m` : mins >= 1 ? `${mins}m ${pad(secs)}s` : `${secs}s`;
 
-  const frac = msLeft / DAY_MS; // portion of a full day remaining
+  // arc FILLS as the day elapses — like the sun tracking across the sky
+  const elapsed = Math.min(1, Math.max(0, (DAY_MS - msLeft) / DAY_MS));
   const R = 52, C = 2 * Math.PI * R;
   ring.style.strokeDasharray = C;
-  ring.style.strokeDashoffset = C * (1 - frac);
+  ring.style.strokeDashoffset = C * (1 - elapsed);
 
-  // sun marker rides the leading edge of the arc (the shadow tip of the dial)
-  const a = 2 * Math.PI * frac;
+  // sun marker rides the leading edge of the filled arc (the shadow tip of the dial)
+  const a = 2 * Math.PI * elapsed;
   if (tip) { tip.setAttribute("cx", (60 + R * Math.cos(a)).toFixed(2)); tip.setAttribute("cy", (60 + R * Math.sin(a)).toFixed(2)); }
 
   // layered urgency: calm → urgent (<3h) → critical (<1h)
@@ -494,7 +509,7 @@ function tickWindow() {
 }
 
 /* ---------------------------------------------------------------- CAPTURE */
-let stream = null, facing = "environment";
+let stream = null, facing = "environment", currentLens = "1", backLenses = {}, capturing = false;
 async function openCapture() {
   // guard: never allow a second shot
   if (await DB.hasPhoto(todayKey())) { toast("You've already captured today."); render(); return; }
@@ -511,14 +526,26 @@ async function openCapture() {
     <div class="cap-hint" id="hint">Frame it. When you tap, it's kept.</div>
     <div class="cap-controls">
       <p class="cap-warn">This becomes your photo for<br>${prettyDate(new Date())}</p>
-      <button class="shutter-btn" id="snap" aria-label="Capture"></button>
+      <div class="lens-row" id="lensRow" hidden></div>
+      <div class="cap-actionbar">
+        <span class="cap-slot"></span>
+        <button class="shutter-btn" id="snap" aria-label="Capture"></button>
+        <button class="flip-btn" id="flip" aria-label="Flip camera">${svgIcon("flip")}</button>
+      </div>
     </div>
-    <button class="flip" id="flip" aria-label="Flip camera">${svgIcon("flip")}</button>
     <div class="flash" id="flash"></div>`;
   document.body.appendChild(el);
 
+  // start fresh each session: rear camera at 1× until we learn the lenses
+  facing = "environment"; currentLens = "1"; backLenses = {}; capturing = false;
+
   $("#cancel").onclick = closeCapture;
-  $("#flip").onclick = async () => { facing = facing === "environment" ? "user" : "environment"; await startCam(); };
+  $("#flip").onclick = async () => {
+    facing = facing === "environment" ? "user" : "environment";
+    currentLens = "1"; // zoom is a rear-camera notion; reset on flip
+    haptic(6);
+    await startCam();
+  };
   $("#snap").onclick = commitShot;
   await startCam();
 }
@@ -526,21 +553,76 @@ async function openCapture() {
 async function startCam() {
   const video = $("#cam");
   if (stream) stream.getTracks().forEach((t) => t.stop());
+  const base = { width: { ideal: 2560 }, height: { ideal: 2560 } };
+  // prefer the exact lens (e.g. the ultra-wide for 0.5×) when we know it
+  const deviceId = facing === "environment" ? backLenses[currentLens] : null;
+  const primary = deviceId
+    ? { video: { deviceId: { exact: deviceId }, ...base }, audio: false }
+    : { video: { facingMode: { ideal: facing }, ...base }, audio: false };
   try {
-    stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { ideal: facing }, width: { ideal: 2560 }, height: { ideal: 2560 } },
-      audio: false,
-    });
+    stream = await navigator.mediaDevices.getUserMedia(primary);
     video.srcObject = stream;
   } catch (e) {
-    $("#hint").innerHTML = `Camera is blocked.<br><span class="tiny">Enable it in Settings → Safari, then reopen.</span>`;
-    $("#snap").disabled = true;
+    // a stale deviceId (lens no longer available) — fall back to facingMode
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: facing }, ...base }, audio: false });
+      video.srcObject = stream;
+    } catch (e2) {
+      $("#hint").innerHTML = `Camera is blocked.<br><span class="tiny">Enable it in Settings → Safari, then reopen.</span>`;
+      $("#snap").disabled = true;
+      return;
+    }
   }
+  await discoverLenses();
+  updateLensUI();
+}
+
+/* enumerate the rear lenses once permission is granted so 0.5× can map to the
+   ultra-wide camera. Labels are only populated after getUserMedia succeeds. */
+async function discoverLenses() {
+  try {
+    const devs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "videoinput");
+    const back = devs.filter((d) => /back|rear|environment/i.test(d.label));
+    const pool = back.length ? back : devs;
+    const ultra = pool.find((d) => /ultra|0\.5|wide angle/i.test(d.label));
+    const main = pool.find((d) => /back camera|wide/i.test(d.label) && !/ultra|tele/i.test(d.label));
+    const next = {};
+    if (ultra) next["0.5"] = ultra.deviceId;
+    next["1"] = (main || back[0] || {}).deviceId || backLenses["1"] || null;
+    backLenses = next;
+  } catch {}
+}
+
+/* draw the lens pills — only meaningful when a 0.5× (ultra-wide) lens exists */
+function updateLensUI() {
+  const row = $("#lensRow");
+  if (!row) return;
+  const show = facing === "environment" && !!backLenses["0.5"];
+  row.hidden = !show;
+  if (!show) { row.innerHTML = ""; return; }
+  const opts = [["0.5", "0.5×"], ["1", "1×"]];
+  row.innerHTML = opts.map(([z, l]) => `<button class="lens-pill ${currentLens === z ? "on" : ""}" data-z="${z}">${l}</button>`).join("");
+  row.querySelectorAll(".lens-pill").forEach((btn) => {
+    btn.onclick = async () => {
+      if (currentLens === btn.dataset.z) return;
+      currentLens = btn.dataset.z; haptic(6); await startCam();
+    };
+  });
 }
 
 async function commitShot() {
   const video = $("#cam"), snap = $("#snap");
-  if (!video?.videoWidth) return;
+  if (!video || capturing) return;
+  // camera may still be warming up (e.g. just after a lens flip) — wait for a frame
+  if (!video.videoWidth) {
+    await new Promise((res) => {
+      let done = false; const fin = () => { if (!done) { done = true; res(); } };
+      video.addEventListener("loadeddata", fin, { once: true });
+      setTimeout(fin, 1200);
+    });
+    if (!video.videoWidth) return; // still nothing — bail quietly, shutter stays live
+  }
+  capturing = true;
   snap.disabled = true;
   haptic(16);
 
@@ -568,11 +650,10 @@ async function commitShot() {
   await DB.putPhoto(rec);
   if (!State.app.firstCaptureDate) { State.app.firstCaptureDate = dateKey; await State.save(); }
 
-  // ambient metadata resolves in the background and updates the record
-  fetchAmbient().then(async (meta) => {
-    const fresh = await DB.getPhoto(dateKey);
-    if (fresh) { fresh.meta = Object.assign(fresh.meta || {}, meta); await DB.putPhoto(fresh); }
-  }).catch(() => {});
+  // ambient metadata resolves in the background and merges into the record
+  fetchAmbient().then((meta) =>
+    DB.updatePhoto(dateKey, (rec) => { rec.meta = Object.assign(rec.meta || {}, meta); })
+  ).catch(() => {});
 
   // done panel over the frozen frame
   const panel = document.createElement("div");
@@ -596,6 +677,7 @@ async function commitShot() {
 function closeCapture() {
   if (stream) stream.getTracks().forEach((t) => t.stop());
   stream = null;
+  capturing = false;
   $("#capture")?.remove();
   renderUpdateBanner();
 }
