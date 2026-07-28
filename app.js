@@ -573,6 +573,8 @@ async function startCam() {
       return;
     }
   }
+  // mirror the front camera so the preview reads like a mirror
+  video.classList.toggle("mirror", facing === "user");
   await discoverLenses();
   updateLensUI();
 }
@@ -631,7 +633,10 @@ async function commitShot() {
   const canvas = document.createElement("canvas");
   const scale = Math.min(1, CONFIG.PHOTO_MAX_DIM / Math.max(vw, vh));
   canvas.width = Math.round(vw * scale); canvas.height = Math.round(vh * scale);
-  canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
+  const cctx = canvas.getContext("2d");
+  // mirror the front camera so the saved frame matches the mirrored preview
+  if (facing === "user") { cctx.translate(canvas.width, 0); cctx.scale(-1, 1); }
+  cctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
   // flash + freeze the frame in place
   $("#flash").classList.add("go");
