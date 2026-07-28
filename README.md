@@ -4,8 +4,13 @@
 
 **One honest photo a day.**
 
-One tap — no retakes, no deletes, no second shot. Miss a day and it becomes a black frame with the
-date. At the end of a 365-day cycle, every frame is stitched into a ~30-second film you watch **once**.
+A camera app that only lets you take one photo a day. That's it! One shot, no do-overs. Once you tap the shutter, that's your picture for the day. You can't retake it, you can't delete it, and you can't take a second one.
+
+The idea is that because you only get one, you actually stop and think about it. Instead of snapping 40 near-identical photos you'll never look at, you capture the one thing that mattered that day: your coffee, your kid, the sky, a mess on the floor, whatever it was.
+
+Then at the end of the year, the app stitches all 365 photos together into a short film, one quick frame per day, so you can watch your whole year play back in about half a minute.
+
+It's the opposite of a normal camera or Instagram. There's no feed, no likes, no endless scrolling. Just one honest picture a day, and a little movie of your life at the end of it.
 
 *No feed. No likes. No scrolling. Just your year, one honest frame at a time.*
 
