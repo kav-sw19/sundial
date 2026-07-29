@@ -144,9 +144,11 @@ That's the point: you're building it blind.
 - **The only network calls** are, at the moment you take a photo: **weather** (open-meteo.com) and
   **city name** (bigdatacloud.net), looked up from your coordinates. Moon phase is calculated on your
   device. Offline? The photo still saves; it just skips weather/city.
-- **A year is precious and it's local-only — back it up.** Tap **Save to Photos** after each shot so
-  there's a copy in your gallery. And **don't** clear the site's data or delete the home-screen icon,
-  or the in-app photos are gone.
+- **A year is precious and it's local-only — back it up.** Two ways: tap **Save to Photos** after each
+  shot so there's a copy in your gallery, and use **⚙️ Settings → Back up your year** to save *everything*
+  (photos, captions, ambient data, and any sound) into one `.zip`. Move that file somewhere safe; on a
+  new phone, **Settings → Restore from a backup** brings the whole year back. And **don't** clear the
+  site's data or delete the home-screen icon, or the in-app photos are gone.
 
 ---
 
@@ -192,7 +194,8 @@ Everything tweakable lives at the top of **`app.js`**:
 const CONFIG = {
   YEAR_MODE: "rolling",    // "rolling" = 365 days from your FIRST photo.
                            // "calendar" = Jan 1 → Dec 31; film reveals on Dec 31.
-  FILM_TARGET_SECONDS: 30, // how long the whole-year film runs
+  FILM_FRAME_MS: 550,      // how long each frame holds in the film (calm, not snappy)
+  FILM_CROSSFADE_MS: 300,  // gentle dissolve from one day into the next
   PHOTO_MAX_DIM: 1600,     // longest stored edge in px (quality vs. storage)
   JPEG_QUALITY: 0.86,      // 0–1
   ASPECT: 4 / 5,           // the portrait frame the film is composed in

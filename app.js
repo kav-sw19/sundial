@@ -7,8 +7,10 @@ const CONFIG = {
   // 'rolling'  = a 365-day year that starts on your FIRST photo, reveals 1yr later.
   // 'calendar' = Jan 1 → Dec 31 of the year you start (film seals until Dec 31).
   YEAR_MODE: "rolling",
-  FILM_TARGET_SECONDS: 30,   // whole-year film runtime
-  FILM_MIN_FRAME_MS: 60,     // never faster than this per frame
+  FILM_FRAME_MS: 550,        // how long each frame holds — calm, not snapping past
+  FILM_CROSSFADE_MS: 300,    // gentle dissolve from one day into the next
+  FILM_TARGET_SECONDS: 30,   // (legacy — pacing is now per-frame; kept for the README)
+  FILM_MIN_FRAME_MS: 60,     // floor if ever computing from a target
   PHOTO_MAX_DIM: 1600,       // longest edge stored (keeps a year well under phone storage)
   JPEG_QUALITY: 0.86,
   ASPECT: 4 / 5,             // portrait frame the film is composed in
@@ -99,6 +101,30 @@ async function fetchAmbient() {
   return meta;
 }
 
+/* record a short moment of ambient sound and merge it into the day's record.
+   Runs in the background after the (instant) photo commit, like fetchAmbient. */
+async function recordMoment(dateKey, ms = 3000) {
+  if (typeof MediaRecorder === "undefined") return;
+  let s;
+  try {
+    s = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const mime = ["audio/mp4", "audio/webm;codecs=opus", "audio/webm"].find((m) => MediaRecorder.isTypeSupported?.(m)) || "";
+    const rec = new MediaRecorder(s, mime ? { mimeType: mime } : undefined);
+    const chunks = [];
+    rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+    const stopped = new Promise((res) => { rec.onstop = res; });
+    rec.start();
+    setTimeout(() => { try { rec.stop(); } catch {} }, ms);
+    await stopped;
+    if (!chunks.length) return;
+    const type = rec.mimeType || mime || "audio/webm";
+    const audio = new Blob(chunks, { type });
+    await DB.updatePhoto(dateKey, (r) => { r.audio = audio; r.audioType = type; });
+  } catch {} finally {
+    s?.getTracks().forEach((t) => t.stop());
+  }
+}
+
 /* ---------------------------------------------------------------- storage (IndexedDB) */
 const DB = (() => {
   let dbp;
@@ -159,12 +185,16 @@ const DB = (() => {
 const State = {
   app: null, // { onboarded, firstCaptureDate, settings, lastNudgeDate }
   async load() {
+    const DEFAULT_SETTINGS = {
+      showStrip: true, devPreview: false, notifyTime: "09:00",
+      captureSound: false, showGrid: false, accent: "amber",
+    };
     this.app = (await DB.getMeta("app")) || {
       onboarded: false, firstCaptureDate: null, lastNudgeDate: null,
-      settings: { showStrip: true, devPreview: false, notifyTime: "09:00" },
+      settings: { ...DEFAULT_SETTINGS },
     };
-    // migrate defaults
-    this.app.settings = Object.assign({ showStrip: true, devPreview: false, notifyTime: "09:00" }, this.app.settings || {});
+    // migrate defaults (new keys land on older saved state)
+    this.app.settings = Object.assign({ ...DEFAULT_SETTINGS }, this.app.settings || {});
     return this.app;
   },
   async save() { await DB.setMeta("app", this.app); },
@@ -210,6 +240,20 @@ async function buildTimeline() {
   return days;
 }
 
+/* every past year's photo for today's date, closest year first */
+async function photosOnThisDay() {
+  const now = new Date();
+  const startYear = State.app.firstCaptureDate ? parseKey(State.app.firstCaptureDate).getFullYear() : now.getFullYear();
+  const out = [];
+  for (let y = now.getFullYear() - 1; y >= startYear; y--) {
+    const probe = new Date(y, now.getMonth(), now.getDate());
+    const rec = await DB.getPhoto(keyOf(probe));
+    if (rec) out.push({ yearsAgo: now.getFullYear() - y, rec });
+  }
+  return out;
+}
+function yearsAgoLabel(n) { return n === 1 ? "One year ago today" : `${n} years ago today`; }
+
 /* ---------------------------------------------------------------- save to Photos (gallery) */
 async function saveToGallery(blob, dateKey) {
   const file = new File([blob], `sundial-${dateKey}.jpg`, { type: "image/jpeg" });
@@ -224,6 +268,163 @@ async function saveToGallery(blob, dateKey) {
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 4000);
   return true;
+}
+
+/* ---------------------------------------------------------------- backup (.zip) */
+// A year is precious and lives only on this device. Export bundles every photo
+// (as a real .jpg you can browse) plus its caption & ambient metadata into one
+// .zip; import restores it on any device. Hand-rolled STORE-method zip — no libs,
+// no base64 bloat, and the archive opens in any unzip tool.
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+function crc32(bytes) {
+  let c = 0xffffffff;
+  for (let i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+// files: [{ name: string, data: Uint8Array }] → Blob (application/zip)
+function zipWrite(files) {
+  const enc = new TextEncoder();
+  const chunks = [];
+  const central = [];
+  let offset = 0;
+  const u32 = (n) => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, n >>> 0, true); return b; };
+  const u16 = (n) => { const b = new Uint8Array(2); new DataView(b.buffer).setUint16(0, n & 0xffff, true); return b; };
+  const push = (b) => { chunks.push(b); offset += b.length; };
+  for (const f of files) {
+    const name = enc.encode(f.name);
+    const crc = crc32(f.data);
+    const localOff = offset;
+    // local file header
+    push(u32(0x04034b50)); push(u16(20)); push(u16(0)); push(u16(0)); push(u16(0)); push(u16(0));
+    push(u32(crc)); push(u32(f.data.length)); push(u32(f.data.length));
+    push(u16(name.length)); push(u16(0)); push(name); push(f.data);
+    // central directory record (buffered, appended after all locals)
+    central.push({ name, crc, size: f.data.length, off: localOff });
+  }
+  const cdStart = offset;
+  for (const c of central) {
+    push(u32(0x02014b50)); push(u16(20)); push(u16(20)); push(u16(0)); push(u16(0)); push(u16(0)); push(u16(0));
+    push(u32(c.crc)); push(u32(c.size)); push(u32(c.size));
+    push(u16(c.name.length)); push(u16(0)); push(u16(0)); push(u16(0)); push(u16(0));
+    push(u32(0)); push(u32(c.off)); push(c.name);
+  }
+  const cdSize = offset - cdStart;
+  push(u32(0x06054b50)); push(u16(0)); push(u16(0)); push(u16(central.length)); push(u16(central.length));
+  push(u32(cdSize)); push(u32(cdStart)); push(u16(0));
+  return new Blob(chunks, { type: "application/zip" });
+}
+// parse a STORE-method zip by scanning local file headers → [{ name, data }]
+async function zipRead(blob) {
+  const buf = new Uint8Array(await blob.arrayBuffer());
+  const dv = new DataView(buf.buffer);
+  const dec = new TextDecoder();
+  const out = [];
+  let p = 0;
+  while (p + 4 <= buf.length && dv.getUint32(p, true) === 0x04034b50) {
+    const method = dv.getUint16(p + 8, true);
+    const compSize = dv.getUint32(p + 18, true);
+    const nameLen = dv.getUint16(p + 26, true);
+    const extraLen = dv.getUint16(p + 28, true);
+    const nameStart = p + 30;
+    const name = dec.decode(buf.subarray(nameStart, nameStart + nameLen));
+    const dataStart = nameStart + nameLen + extraLen;
+    const data = buf.subarray(dataStart, dataStart + compSize);
+    if (method !== 0) throw new Error("Unsupported compression in backup");
+    out.push({ name, data });
+    p = dataStart + compSize;
+  }
+  return out;
+}
+
+// is the device's storage getting tight? returns details when it's worth a nudge
+async function checkStorage() {
+  try {
+    const est = await navigator.storage?.estimate?.();
+    if (!est || !est.quota) return null;
+    const usedMB = est.usage / 1048576;
+    const freeMB = (est.quota - est.usage) / 1048576;
+    const pct = est.usage / est.quota;
+    if (pct > 0.85 || freeMB < 60) return { usedMB, freeMB, pct };
+    return null;
+  } catch { return null; }
+}
+
+async function exportBackup() {
+  toast("Bundling your year…", 3000);
+  const photos = await DB.allPhotos();
+  photos.sort((a, b) => (a.date < b.date ? -1 : 1));
+  const files = [];
+  const manifest = {
+    app: "sundial", format: 1, exportedAt: new Date().toISOString(),
+    firstCaptureDate: State.app.firstCaptureDate,
+    settings: State.app.settings,
+    photos: [],
+  };
+  for (const p of photos) {
+    const bytes = new Uint8Array(await p.blob.arrayBuffer());
+    files.push({ name: `photos/${p.date}.jpg`, data: bytes });
+    const entry = { date: p.date, createdAt: p.createdAt || null, caption: p.caption || "", meta: p.meta || {} };
+    if (p.audio) {
+      const ext = (p.audioType || "").includes("mp4") ? "m4a" : "webm";
+      const aname = `audio/${p.date}.${ext}`;
+      files.push({ name: aname, data: new Uint8Array(await p.audio.arrayBuffer()) });
+      entry.audioFile = aname; entry.audioType = p.audioType || "audio/webm";
+    }
+    manifest.photos.push(entry);
+  }
+  files.unshift({ name: "manifest.json", data: new TextEncoder().encode(JSON.stringify(manifest, null, 2)) });
+  const zip = zipWrite(files);
+  const stamp = todayKey();
+  const file = new File([zip], `sundial-backup-${stamp}.zip`, { type: "application/zip" });
+  if (navigator.canShare?.({ files: [file] })) {
+    try { await navigator.share({ files: [file], title: "Sundial backup" }); return; } catch (e) { if (e.name === "AbortError") return; }
+  }
+  const url = URL.createObjectURL(zip);
+  const a = document.createElement("a");
+  a.href = url; a.download = file.name; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 6000);
+}
+
+// restore from a .zip; merges into whatever is already here (fills empty days,
+// overwrites matching ones), and pulls the first-capture date back to the earliest.
+async function importBackup(file) {
+  const entries = await zipRead(file);
+  const manEntry = entries.find((e) => e.name === "manifest.json");
+  if (!manEntry) throw new Error("Not a Sundial backup (no manifest).");
+  const manifest = JSON.parse(new TextDecoder().decode(manEntry.data));
+  if (manifest.app !== "sundial") throw new Error("Not a Sundial backup.");
+  const byName = new Map(entries.map((e) => [e.name, e]));
+  let restored = 0;
+  for (const meta of manifest.photos || []) {
+    const img = byName.get(`photos/${meta.date}.jpg`);
+    if (!img) continue;
+    // copy bytes so the record's blob doesn't alias the whole archive buffer
+    const blob = new Blob([img.data.slice()], { type: "image/jpeg" });
+    const rec = { date: meta.date, blob, caption: meta.caption || "", meta: meta.meta || {}, createdAt: meta.createdAt || null };
+    if (meta.audioFile) {
+      const a = byName.get(meta.audioFile);
+      if (a) { rec.audio = new Blob([a.data.slice()], { type: meta.audioType || "audio/webm" }); rec.audioType = meta.audioType || "audio/webm"; }
+    }
+    await DB.putPhoto(rec);
+    restored++;
+  }
+  // earliest first-capture wins so the film window covers the whole restored year
+  const dates = (manifest.photos || []).map((p) => p.date).filter(Boolean).sort();
+  const earliest = dates[0];
+  if (earliest && (!State.app.firstCaptureDate || earliest < State.app.firstCaptureDate)) {
+    State.app.firstCaptureDate = earliest;
+  }
+  State.app.onboarded = true;
+  await State.save();
+  return restored;
 }
 
 /* ---------------------------------------------------------------- tiny helpers */
@@ -242,8 +443,28 @@ function svgIcon(name) {
     flip: '<path fill="currentColor" d="M12 6V3L8 7l4 4V8a5 5 0 11-5 5H5a7 7 0 107-7z"/>',
     expand: '<path fill="currentColor" d="M4 9V4h5v2H6v3H4zm11-5h5v5h-2V6h-3V4zM6 15v3h3v2H4v-5h2zm12 0h2v5h-5v-2h3v-3z"/>',
     edit: '<path fill="currentColor" d="M3 17.25V21h3.75L17.8 9.94l-3.75-3.75L3 17.25zM20.7 7.04a1 1 0 000-1.41l-2.34-2.34a1 1 0 00-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/>',
+    grid: '<path fill="none" stroke="currentColor" stroke-width="1.6" d="M3 9h18M3 15h18M9 3v18M15 3v18"/>',
+    sound: '<path fill="currentColor" d="M4 9v6h4l5 5V4L8 9H4zm12.5 3a4.5 4.5 0 00-2.5-4v8a4.5 4.5 0 002.5-4zm-2.5 6.7a7 7 0 000-13.4v2.1a5 5 0 010 9.2v2.1z"/>',
+    pause: '<path fill="currentColor" d="M7 5h4v14H7zM13 5h4v14h-4z"/>',
   };
   return `<svg viewBox="0 0 24 24" aria-hidden="true">${p[name] || ""}</svg>`;
+}
+
+/* ---------------------------------------------------------------- theme accents */
+// The sun/dial hue. Applied as CSS variables so the whole UI (ring, buttons,
+// boot sun) recolours together. Default 'amber' matches the base :root theme.
+const ACCENTS = {
+  amber:  { sun: "#ff9a3d", hot: "#ffd27a", label: "Amber" },
+  rose:   { sun: "#ff5d8f", hot: "#ffb0c8", label: "Rose" },
+  teal:   { sun: "#22c3a6", hot: "#8ef0dd", label: "Teal" },
+  violet: { sun: "#9b7bff", hot: "#cbb8ff", label: "Violet" },
+  sky:    { sun: "#3d9dff", hot: "#a8d4ff", label: "Sky" },
+};
+function applyAccent(key) {
+  const a = ACCENTS[key] || ACCENTS.amber;
+  const r = document.documentElement.style;
+  r.setProperty("--sun", a.sun);
+  r.setProperty("--sun-hot", a.hot);
 }
 
 /* wrap a string to N canvas lines, ellipsising the overflow */
@@ -348,7 +569,7 @@ async function renderHome() {
   const now = new Date();
   const tKey = todayKey();
   const shotToday = await DB.getPhoto(tKey);
-  const lastYear = await DB.getPhoto(keyYearAgo());
+  const onThisDay = State.app.firstCaptureDate ? await photosOnThisDay() : [];
   const { total } = State.app.firstCaptureDate ? filmRange() : { total: 365 };
 
   app.innerHTML = `
@@ -364,6 +585,7 @@ async function renderHome() {
       </div>
     </div>
 
+    <div id="lowstore"></div>
     <div id="ly"></div>
     <div id="core"></div>
     <div id="strip"></div>
@@ -372,23 +594,32 @@ async function renderHome() {
   $("#toFilm").onclick = () => { view = "film"; render(); };
   $("#toSettings").onclick = openSettings;
 
-  // This-day-last-year peek
+  // This-day-in-past-years peek: the closest prior year as a big card, older
+  // years as a small strip beneath it.
   const ly = $("#ly");
-  if (lastYear) {
-    const url = URL.createObjectURL(lastYear.blob);
-    const m = lastYear.meta || {};
+  if (onThisDay.length) {
+    const primary = onThisDay[0];
+    const rest = onThisDay.slice(1);
+    const url = URL.createObjectURL(primary.rec.blob);
+    const m = primary.rec.meta || {};
     const bits = [m.weatherGlyph && `${m.weatherGlyph} ${m.tempC != null ? m.tempC + "°" : ""}`, m.city, m.moon?.glyph].filter(Boolean).join("  ·  ");
     ly.innerHTML = `
-      <button class="lastyear" id="lyCard" aria-label="View last year's photo">
-        <span class="ly-label">One year ago today</span>
+      <button class="lastyear" id="lyCard" aria-label="View ${escapeHtml(yearsAgoLabel(primary.yearsAgo))}">
+        <span class="ly-label">${yearsAgoLabel(primary.yearsAgo)}</span>
         <span class="ly-expand">${svgIcon("expand")}</span>
-        <img class="ly-img" src="${url}" alt="Your photo from a year ago" />
+        <img class="ly-img" src="${url}" alt="Your photo from ${primary.yearsAgo} year(s) ago" />
         <div class="ly-meta">
-          ${lastYear.caption ? `<p class="ly-cap">${escapeHtml(lastYear.caption)}</p>` : ""}
+          ${primary.rec.caption ? `<p class="ly-cap">${escapeHtml(primary.rec.caption)}</p>` : ""}
           ${bits ? `<div class="ly-bits">${bits}</div>` : ""}
         </div>
-      </button>`;
-    $("#lyCard").onclick = () => openViewer(lastYear, { kicker: "One year ago", editable: true });
+      </button>
+      ${rest.length ? `<div class="ly-more" id="lyMore">${rest.map((o, i) =>
+        `<button class="ly-thumb" data-i="${i}" aria-label="View ${escapeHtml(yearsAgoLabel(o.yearsAgo))}"><img src="${URL.createObjectURL(o.rec.blob)}" alt=""/><span>${o.yearsAgo}y</span></button>`).join("")}</div>` : ""}`;
+    $("#lyCard").onclick = () => openViewer(primary.rec, { kicker: yearsAgoLabel(primary.yearsAgo).replace(" today", ""), editable: true });
+    if (rest.length) $("#lyMore").querySelectorAll(".ly-thumb").forEach((btn) => {
+      const o = rest[+btn.dataset.i];
+      btn.onclick = () => openViewer(o.rec, { kicker: yearsAgoLabel(o.yearsAgo).replace(" today", ""), editable: true });
+    });
   } else if (!shotToday) {
     ly.innerHTML = `<div class="lastyear"><div class="ly-empty"><div><div style="font-size:26px">🌱</div><p class="tiny" style="margin-top:8px">A year from now, today's shot will greet you here.</p></div></div></div>`;
   }
@@ -426,7 +657,7 @@ async function renderHome() {
           <svg viewBox="0 0 120 120">
             <defs>
               <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
-                <stop offset="0" stop-color="#ffd27a"/><stop offset="1" stop-color="#ff8a3d"/>
+                <stop offset="0" stop-color="var(--sun-hot)"/><stop offset="1" stop-color="var(--sun)"/>
               </linearGradient>
             </defs>
             <circle class="ring-bg" cx="60" cy="60" r="52"/>
@@ -463,6 +694,14 @@ async function renderHome() {
         <div class="dotgrid">${days.map((d) => `<span class="dot ${d.status === "shot" ? "shot" : d.status === "missed" ? "missed" : ""} ${d.date === tKey ? "today" : ""}"></span>`).join("")}</div>
       </div>`;
   }
+
+  // storage-low nudge — surfaces only when space is tight, points to a backup
+  checkStorage().then((w) => {
+    const host = $("#lowstore");
+    if (!host || !w) return;
+    host.innerHTML = `<div class="lowstore"><div><b>Storage is running low</b><p class="tiny">Only ${Math.max(0, Math.round(w.freeMB))} MB free — export a backup so a year is never lost.</p></div><button class="pill" id="lowBackup">Back up</button></div>`;
+    $("#lowBackup").onclick = async () => { haptic(6); try { await exportBackup(); } catch { toast("Backup failed — try again."); } };
+  });
 }
 
 function sealMessage() {
@@ -518,10 +757,11 @@ async function openCapture() {
   el.className = "capture"; el.id = "capture";
   el.innerHTML = `
     <video id="cam" autoplay muted playsinline></video>
+    <div class="cap-grid" id="capGrid" ${State.app.settings.showGrid ? "" : "hidden"}><i></i><i></i><i></i><i></i></div>
     <div class="cap-top">
       <button class="x" id="cancel">${svgIcon("close")}</button>
       <span class="tiny" style="color:#fff;opacity:.8">One shot · no retake</span>
-      <span style="width:40px"></span>
+      <button class="x ${State.app.settings.showGrid ? "on" : ""}" id="gridToggle" aria-label="Framing grid" aria-pressed="${State.app.settings.showGrid}">${svgIcon("grid")}</button>
     </div>
     <div class="cap-hint" id="hint">Frame it. When you tap, it's kept.</div>
     <div class="cap-controls">
@@ -540,6 +780,13 @@ async function openCapture() {
   facing = "environment"; currentLens = "1"; backLenses = {}; capturing = false;
 
   $("#cancel").onclick = closeCapture;
+  $("#gridToggle").onclick = async () => {
+    const on = !State.app.settings.showGrid;
+    State.app.settings.showGrid = on;
+    $("#capGrid").hidden = !on;
+    const g = $("#gridToggle"); g.classList.toggle("on", on); g.setAttribute("aria-pressed", on);
+    haptic(6); await State.save();
+  };
   $("#flip").onclick = async () => {
     facing = facing === "environment" ? "user" : "environment";
     currentLens = "1"; // zoom is a rear-camera notion; reset on flip
@@ -660,6 +907,9 @@ async function commitShot() {
     DB.updatePhoto(dateKey, (rec) => { rec.meta = Object.assign(rec.meta || {}, meta); })
   ).catch(() => {});
 
+  // optional: capture a few seconds of the moment's sound (viewer playback only)
+  if (State.app.settings.captureSound) recordMoment(dateKey).catch(() => {});
+
   // done panel over the frozen frame
   const panel = document.createElement("div");
   panel.className = "commit";
@@ -708,13 +958,34 @@ function openViewer(rec, opts = {}) {
       <span style="width:42px"></span>
     </div>
     <div class="v-bottom">
+      ${rec.audio ? `<button class="v-sound" id="vSound" aria-label="Play the moment's sound"><span class="vs-ico">${svgIcon("sound")}</span><span class="vs-txt">Play the moment</span></button>` : ""}
       ${bits ? `<div class="v-meta">${bits}</div>` : ""}
       <div class="v-cap" id="vCap"></div>
     </div>`;
   document.body.appendChild(el);
 
+  // the moment's ambient sound — plays in full here (never in the montage film)
+  let audioEl = null, audioUrl = null;
+  if (rec.audio) {
+    const btn = $("#vSound", el);
+    audioUrl = URL.createObjectURL(rec.audio);
+    audioEl = new Audio(audioUrl);
+    const setIcon = (playing) => { btn.querySelector(".vs-ico").innerHTML = svgIcon(playing ? "pause" : "sound"); btn.querySelector(".vs-txt").textContent = playing ? "Playing…" : "Play the moment"; };
+    audioEl.onended = () => setIcon(false);
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      if (audioEl.paused) { audioEl.play().then(() => setIcon(true)).catch(() => {}); }
+      else { audioEl.pause(); setIcon(false); }
+    };
+  }
+
   let offEsc;
-  const close = () => { offEsc?.(); el.classList.add("out"); setTimeout(() => { el.remove(); URL.revokeObjectURL(url); }, 180); render(); };
+  const close = () => {
+    offEsc?.();
+    if (audioEl) { audioEl.pause(); audioEl.src = ""; }
+    if (audioUrl) URL.revokeObjectURL(audioUrl);
+    el.classList.add("out"); setTimeout(() => { el.remove(); URL.revokeObjectURL(url); }, 180); render();
+  };
   offEsc = onEscape(close);
   $("#vClose", el).onclick = close;
   el.addEventListener("click", (e) => { if (e.target === el || e.target.classList.contains("v-img")) close(); });
@@ -804,9 +1075,63 @@ function renderFilm() {
       <h2 style="font-size:24px">It's time.</h2>
       <p class="muted" style="max-width:300px">${filmRange().total} days, one frame each. The black frames are the days you missed — they belong here too.</p>
       <button class="btn primary wide" id="play">▶  Watch your film</button>
+      <button class="btn ghost wide" id="poster" style="margin-top:10px">Save a poster of the year</button>
     </div>`);
   bindBack();
   $("#play").onclick = playFilm;
+  $("#poster").onclick = async () => { const days = await buildTimeline(); await exportPoster(days); };
+}
+
+/* one-image contact sheet of the whole year — every day as a tile, missed days
+   left dark. A keepsake you can print. */
+async function exportPoster(days) {
+  toast("Composing your poster…", 3000);
+  const cw = 150, ch = Math.round(cw / CONFIG.ASPECT), gap = 5;
+  const cols = Math.max(1, Math.ceil(Math.sqrt(days.length * CONFIG.ASPECT)));
+  const rows = Math.ceil(days.length / cols);
+  const padX = 70, padTop = 190, padBot = 96;
+  const W = padX * 2 + cols * cw + (cols - 1) * gap;
+  const H = padTop + rows * ch + (rows - 1) * gap + padBot;
+  const canvas = document.createElement("canvas"); canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#0e1116"; ctx.fillRect(0, 0, W, H);
+
+  const { start, end } = filmRange();
+  const yr = start.getFullYear() === end.getFullYear() ? `${start.getFullYear()}` : `${start.getFullYear()}–${end.getFullYear()}`;
+  const shot = days.filter((d) => d.rec).length;
+  ctx.textAlign = "left";
+  ctx.fillStyle = "#f4c46b"; ctx.font = "600 62px -apple-system, system-ui, sans-serif";
+  ctx.fillText("Sundial", padX, 96);
+  ctx.fillStyle = "rgba(255,255,255,.6)"; ctx.font = "400 30px -apple-system, system-ui, sans-serif";
+  ctx.fillText(`${yr} · ${shot} of ${days.length} days`, padX, 142);
+
+  for (let i = 0; i < days.length; i++) {
+    const x = padX + (i % cols) * (cw + gap);
+    const y = padTop + Math.floor(i / cols) * (ch + gap);
+    ctx.fillStyle = "#171b22"; ctx.fillRect(x, y, cw, ch);
+    const d = days[i];
+    if (d.rec) {
+      try {
+        const bmp = await createImageBitmap(d.rec.blob);
+        const r = Math.max(cw / bmp.width, ch / bmp.height);
+        const dw = bmp.width * r, dh = bmp.height * r;
+        ctx.save(); ctx.beginPath(); ctx.rect(x, y, cw, ch); ctx.clip();
+        ctx.drawImage(bmp, x + (cw - dw) / 2, y + (ch - dh) / 2, dw, dh);
+        ctx.restore();
+        bmp.close?.();
+      } catch {}
+    }
+  }
+  ctx.textAlign = "center";
+  ctx.fillStyle = "rgba(255,255,255,.4)"; ctx.font = "400 26px -apple-system, system-ui, sans-serif";
+  ctx.fillText("Made to be watched once, at the end.", W / 2, H - 44);
+
+  const blob = await new Promise((r) => canvas.toBlob(r, "image/jpeg", 0.9));
+  const file = new File([blob], `sundial-poster-${start.getFullYear()}.jpg`, { type: "image/jpeg" });
+  if (navigator.canShare?.({ files: [file] })) {
+    try { await navigator.share({ files: [file], title: "My Sundial year" }); return; } catch (e) { if (e.name === "AbortError") return; }
+  }
+  const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = file.name; a.click(); setTimeout(() => URL.revokeObjectURL(url), 6000);
 }
 
 function shellBack(inner) {
@@ -815,11 +1140,104 @@ function shellBack(inner) {
 function bindBack() { const b = $("#back"); if (b) b.onclick = () => { view = "home"; render(); }; }
 
 /* ---------------------------------------------------------------- FILM PLAYER */
+// The film is a slow montage: each day holds for FILM_FRAME_MS and dissolves
+// into the next over FILM_CROSSFADE_MS, so it breathes instead of snapping past.
+// Both live playback and the exported video share the same painter below.
+
+function drawBlackText(ctx, W, H, day) {
+  // a missed day — just its date, small & honest
+  ctx.fillStyle = "rgba(255,255,255,.28)";
+  ctx.font = "500 30px -apple-system, system-ui, sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText(shortDate(day.d), W / 2, H / 2);
+}
+
+// subtle ambient overlays — date, caption & metadata, stacked bottom-up
+function paintOverlay(ctx, W, H, day, overlayAlpha, hasImage) {
+  if (overlayAlpha <= 0.02) return;
+  const PAD = 46;
+  const caption = (day.rec?.caption || "").trim();
+  const line = ambientLine(day.rec?.meta);
+  ctx.textAlign = "left";
+  ctx.font = "500 32px -apple-system, system-ui, sans-serif";
+  const capLines = caption ? wrapText(ctx, caption, W - PAD * 2, 3) : [];
+
+  const blockH = 40 /*date*/ + (capLines.length ? 14 + capLines.length * 42 : 0) + (line ? 44 : 0);
+  const gradH = blockH + 90;
+  ctx.globalAlpha = overlayAlpha;
+  if (hasImage) {
+    const grd = ctx.createLinearGradient(0, H - gradH, 0, H);
+    grd.addColorStop(0, "rgba(0,0,0,0)"); grd.addColorStop(1, "rgba(0,0,0,.62)");
+    ctx.fillStyle = grd; ctx.fillRect(0, H - gradH, W, gradH);
+  }
+
+  let baseline = H - 58;
+  if (line) {
+    ctx.font = "500 26px -apple-system, system-ui, sans-serif";
+    ctx.fillStyle = "rgba(255,255,255,.82)";
+    ctx.fillText(line, PAD, baseline);
+    baseline -= 44;
+  }
+  if (capLines.length) {
+    ctx.font = "500 32px -apple-system, system-ui, sans-serif";
+    ctx.fillStyle = "rgba(255,255,255,.96)";
+    for (let k = capLines.length - 1; k >= 0; k--) { ctx.fillText(capLines[k], PAD, baseline); baseline -= 42; }
+    baseline -= 14;
+  }
+  ctx.font = "600 34px -apple-system, system-ui, sans-serif";
+  ctx.fillStyle = "rgba(255,255,255,.92)";
+  ctx.fillText(`${day.d.getDate()} ${MONTHS[day.d.getMonth()]}`, PAD, baseline);
+  ctx.globalAlpha = 1;
+}
+
+// paint the whole stage at time tMs into the film; returns the current day index
+function paintFilm(ctx, W, H, days, bitmaps, tMs, frameMs, xfade) {
+  const idx = Math.min(days.length - 1, Math.floor(tMs / frameMs));
+  const into = tMs - idx * frameMs;
+  ctx.fillStyle = "#000"; ctx.fillRect(0, 0, W, H);
+
+  const drawDay = (k, alpha) => {
+    if (k < 0 || k >= days.length || alpha <= 0) return;
+    ctx.globalAlpha = alpha;
+    const bmp = bitmaps[k];
+    if (bmp) {
+      const r = Math.max(W / bmp.width, H / bmp.height);
+      const dw = bmp.width * r, dh = bmp.height * r;
+      ctx.drawImage(bmp, (W - dw) / 2, (H - dh) / 2, dw, dh);
+    } else {
+      drawBlackText(ctx, W, H, days[k]);
+    }
+    ctx.globalAlpha = 1;
+  };
+
+  // crossfade: near the end of a frame, the next day fades UP underneath while
+  // the current day fades OUT on top of it.
+  const remaining = frameMs - into;
+  const fading = idx < days.length - 1 && remaining < xfade;
+  if (fading) {
+    const a = 1 - remaining / xfade; // 0 → 1 across the dissolve
+    drawDay(idx + 1, 1);             // incoming day, full
+    drawDay(idx, 1 - a);            // outgoing day dissolves away
+  } else {
+    drawDay(idx, 1);
+  }
+
+  // overlay for the settled frame: fades in over first 35%, out over last 25%
+  if (!fading) {
+    const local = into / frameMs;
+    const oa = Math.max(0, Math.min(1, local / 0.35) * Math.min(1, (1 - local) / 0.25));
+    paintOverlay(ctx, W, H, days[idx], oa, !!bitmaps[idx]);
+  }
+  return idx;
+}
+
 async function playFilm() {
   clearInterval(homeTimer);
   const days = await buildTimeline();
   const W = 1080, H = Math.round(W / CONFIG.ASPECT);
-  const frameMs = Math.max(CONFIG.FILM_MIN_FRAME_MS, Math.round((CONFIG.FILM_TARGET_SECONDS * 1000) / days.length));
+  const frameMs = Math.max(CONFIG.FILM_MIN_FRAME_MS, CONFIG.FILM_FRAME_MS);
+  const xfade = Math.min(CONFIG.FILM_CROSSFADE_MS, frameMs * 0.9);
+  const totalMs = frameMs * days.length;
 
   const el = document.createElement("div");
   el.className = "player"; el.id = "player";
@@ -839,86 +1257,31 @@ async function playFilm() {
     try { return await createImageBitmap(d.rec.blob); } catch { return null; }
   }));
 
-  let i = 0, stopPlay = false, start = performance.now();
-  function drawFrame(idx, overlayAlpha) {
-    const day = days[idx], bmp = bitmaps[idx];
-    ctx.fillStyle = "#000"; ctx.fillRect(0, 0, W, H);
-    if (bmp) {
-      // cover-fit
-      const r = Math.max(W / bmp.width, H / bmp.height);
-      const dw = bmp.width * r, dh = bmp.height * r;
-      ctx.drawImage(bmp, (W - dw) / 2, (H - dh) / 2, dw, dh);
-    } else {
-      // black frame — just the date, small & honest
-      ctx.fillStyle = "rgba(255,255,255,.28)";
-      ctx.font = "500 30px -apple-system, system-ui, sans-serif";
-      ctx.textAlign = "center";
-      ctx.fillText(shortDate(day.d), W / 2, H / 2);
-    }
-    // subtle ambient overlays — date, caption & metadata, stacked bottom-up
-    if (overlayAlpha > 0.02) {
-      const PAD = 46;
-      const caption = (day.rec?.caption || "").trim();
-      const line = ambientLine(day.rec?.meta);
-      ctx.textAlign = "left";
-      ctx.font = "500 32px -apple-system, system-ui, sans-serif";
-      const capLines = caption ? wrapText(ctx, caption, W - PAD * 2, 3) : [];
-
-      // measure the block height so the gradient always fits it
-      const blockH = 40 /*date*/ + (capLines.length ? 14 + capLines.length * 42 : 0) + (line ? 44 : 0);
-      const gradH = blockH + 90;
-      ctx.globalAlpha = overlayAlpha;
-      if (bmp) {
-        const grd = ctx.createLinearGradient(0, H - gradH, 0, H);
-        grd.addColorStop(0, "rgba(0,0,0,0)"); grd.addColorStop(1, "rgba(0,0,0,.62)");
-        ctx.fillStyle = grd; ctx.fillRect(0, H - gradH, W, gradH);
-      }
-
-      let baseline = H - 58;
-      if (line) {
-        ctx.font = "500 26px -apple-system, system-ui, sans-serif";
-        ctx.fillStyle = "rgba(255,255,255,.82)";
-        ctx.fillText(line, PAD, baseline);
-        baseline -= 44;
-      }
-      if (capLines.length) {
-        ctx.font = "500 32px -apple-system, system-ui, sans-serif";
-        ctx.fillStyle = "rgba(255,255,255,.96)";
-        for (let k = capLines.length - 1; k >= 0; k--) { ctx.fillText(capLines[k], PAD, baseline); baseline -= 42; }
-        baseline -= 14;
-      }
-      ctx.font = "600 34px -apple-system, system-ui, sans-serif";
-      ctx.fillStyle = "rgba(255,255,255,.92)";
-      ctx.fillText(`${day.d.getDate()} ${MONTHS[day.d.getMonth()]}`, PAD, baseline);
-      ctx.globalAlpha = 1;
-    }
-  }
-
+  let stopPlay = false, start = performance.now();
   const fill = $("#pFill");
   function loop(now) {
     if (stopPlay) return;
-    const idx = Math.min(days.length - 1, Math.floor((now - start) / frameMs));
-    // overlay fades in over first 35% of each frame, out over last 25%
-    const local = ((now - start) % frameMs) / frameMs;
-    const a = Math.min(1, local / 0.35) * Math.min(1, (1 - local) / 0.25);
-    drawFrame(idx, Math.max(0, a));
-    fill.style.width = `${((now - start) / (frameMs * days.length)) * 100}%`;
-    if (idx >= days.length - 1 && local > 0.98) return endPlay();
+    const t = now - start;
+    const idx = paintFilm(ctx, W, H, days, bitmaps, Math.min(t, totalMs - 1), frameMs, xfade);
+    fill.style.width = `${Math.min(100, (t / totalMs) * 100)}%`;
+    if (t >= totalMs) return endPlay();
     requestAnimationFrame(loop);
   }
   function endPlay() {
-    drawFrame(days.length - 1, 1);
+    // settle on the last day mid-frame so its overlay rests at full opacity
+    paintFilm(ctx, W, H, days, bitmaps, (days.length - 1) * frameMs + frameMs * 0.5, frameMs, xfade);
+    fill.style.width = "100%";
     $("#pReplay").style.display = ""; $("#pReplay").onclick = () => { start = performance.now(); $("#pReplay").style.display = "none"; $("#pSave").style.display = "none"; requestAnimationFrame(loop); };
     const saveBtn = $("#pSave");
     if (typeof MediaRecorder !== "undefined") {
-      saveBtn.style.display = ""; saveBtn.onclick = () => exportFilm(days, bitmaps, frameMs, W, H);
+      saveBtn.style.display = ""; saveBtn.onclick = () => exportFilm(days, bitmaps, frameMs, xfade, W, H);
     }
   }
   requestAnimationFrame(loop);
 }
 
 /* best-effort film export → share sheet / download (post-reveal only) */
-async function exportFilm(days, bitmaps, frameMs, W, H) {
+async function exportFilm(days, bitmaps, frameMs, xfade, W, H) {
   toast("Rendering film…", 3000);
   const canvas = document.createElement("canvas"); canvas.width = W; canvas.height = H;
   const ctx = canvas.getContext("2d");
@@ -935,16 +1298,14 @@ async function exportFilm(days, bitmaps, frameMs, W, H) {
     const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = file.name; a.click(); setTimeout(() => URL.revokeObjectURL(url), 5000);
   };
   rec.start();
-  // render each frame in real time so the recorder captures it
-  let idx = 0;
+  // drive the same painter in real time so the recorder captures the crossfades
+  const totalMs = frameMs * days.length;
+  const t0 = performance.now();
   const step = () => {
-    if (idx >= days.length) { rec.stop(); return; }
-    const day = days[idx], bmp = bitmaps[idx];
-    ctx.fillStyle = "#000"; ctx.fillRect(0, 0, W, H);
-    if (bmp) { const r = Math.max(W / bmp.width, H / bmp.height); ctx.drawImage(bmp, (W - bmp.width * r) / 2, (H - bmp.height * r) / 2, bmp.width * r, bmp.height * r); }
-    else { ctx.fillStyle = "rgba(255,255,255,.28)"; ctx.font = "500 30px system-ui"; ctx.textAlign = "center"; ctx.fillText(shortDate(day.d), W / 2, H / 2); }
-    idx++;
-    setTimeout(step, frameMs);
+    const t = performance.now() - t0;
+    if (t >= totalMs) { paintFilm(ctx, W, H, days, bitmaps, totalMs - 1, frameMs, xfade); rec.stop(); return; }
+    paintFilm(ctx, W, H, days, bitmaps, t, frameMs, xfade);
+    requestAnimationFrame(step);
   };
   step();
 }
@@ -967,8 +1328,24 @@ async function openSettings() {
         <button class="pill" id="notif">Set up</button>
       </div>
       <div class="settings-row">
+        <div><div class="lbl">Back up your year</div><div class="sub">Save every photo &amp; caption to one .zip file</div></div>
+        <button class="pill" id="backup">Export</button>
+      </div>
+      <div class="settings-row">
+        <div><div class="lbl">Restore from a backup</div><div class="sub">Bring a saved .zip onto this device</div></div>
+        <button class="pill" id="restore">Import</button>
+      </div>
+      <div class="settings-row">
         <div><div class="lbl">Show the year strip</div><div class="sub">Dots for shot & missed days on the home screen</div></div>
         <button class="switch ${s.showStrip ? "on" : ""}" role="switch" aria-checked="${s.showStrip}" aria-label="Show the year strip" id="setStrip"><span class="knob"></span></button>
+      </div>
+      <div class="settings-row">
+        <div><div class="lbl">Capture the moment's sound</div><div class="sub">A few seconds of audio, played back in the viewer</div></div>
+        <button class="switch ${s.captureSound ? "on" : ""}" role="switch" aria-checked="${s.captureSound}" aria-label="Capture the moment's sound" id="setSound"><span class="knob"></span></button>
+      </div>
+      <div class="settings-row">
+        <div><div class="lbl">Accent</div><div class="sub">The colour of the sun &amp; dial</div></div>
+        <div class="accent-row" id="accentRow">${Object.entries(ACCENTS).map(([k, a]) => `<button class="swatch ${s.accent === k ? "on" : ""}" data-k="${k}" aria-label="${a.label}" style="background:linear-gradient(180deg, ${a.hot}, ${a.sun})"></button>`).join("")}</div>
       </div>
       <div class="settings-row">
         <div><div class="lbl">Preview the film early</div><div class="sub">Breaks the seal — for testing only</div></div>
@@ -989,7 +1366,41 @@ async function openSettings() {
   // toggles flip in place (the sheet stays open) and re-render home behind it
   const flip = (btn, on) => { btn.classList.toggle("on", on); btn.setAttribute("aria-checked", on); haptic(6); };
   $("#setStrip", bg).onclick = async () => { s.showStrip = !s.showStrip; flip($("#setStrip", bg), s.showStrip); await State.save(); render(); };
+  $("#setSound", bg).onclick = async () => {
+    s.captureSound = !s.captureSound; flip($("#setSound", bg), s.captureSound);
+    if (s.captureSound) toast("The next shot will keep a moment of sound.");
+    await State.save();
+  };
+  $("#accentRow", bg).querySelectorAll(".swatch").forEach((sw) => {
+    sw.onclick = async () => {
+      s.accent = sw.dataset.k;
+      $("#accentRow", bg).querySelectorAll(".swatch").forEach((o) => o.classList.toggle("on", o === sw));
+      applyAccent(s.accent); haptic(6); await State.save(); render();
+    };
+  });
   $("#setDev", bg).onclick = async () => { s.devPreview = !s.devPreview; flip($("#setDev", bg), s.devPreview); toast(s.devPreview ? "Seal broken (preview on)" : "Seal restored"); await State.save(); render(); };
+  $("#backup", bg).onclick = async () => {
+    haptic(6);
+    try { await exportBackup(); } catch (e) { toast("Backup failed — please try again."); }
+  };
+  $("#restore", bg).onclick = () => {
+    const inp = document.createElement("input");
+    inp.type = "file"; inp.accept = ".zip,application/zip";
+    inp.onchange = async () => {
+      const file = inp.files?.[0];
+      if (!file) return;
+      if (!confirm("Restore this backup? It fills in any missing days and overwrites days that match.")) return;
+      toast("Restoring…", 4000);
+      try {
+        const n = await importBackup(file);
+        haptic(12);
+        close();
+        toast(`Restored ${n} photo${n === 1 ? "" : "s"}.`);
+        render();
+      } catch (e) { toast(e.message || "That file isn't a valid backup."); }
+    };
+    inp.click();
+  };
   $("#notif", bg).onclick = async () => {
     if ("Notification" in window) {
       const perm = await Notification.requestPermission();
@@ -1046,6 +1457,7 @@ let updateAccepted = false;
 /* ---------------------------------------------------------------- boot */
 async function boot() {
   await State.load();
+  applyAccent(State.app.settings.accent);
   await render();
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("sw.js").then((reg) => {
