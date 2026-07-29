@@ -188,6 +188,7 @@ const State = {
     const DEFAULT_SETTINGS = {
       showStrip: true, devPreview: false, notifyTime: "09:00",
       captureSound: false, showGrid: false, accent: "amber", filmLook: "none",
+      dateStamp: false, lightLeaks: false,
     };
     this.app = (await DB.getMeta("app")) || {
       onboarded: false, firstCaptureDate: null, lastNudgeDate: null,
@@ -472,13 +473,15 @@ function applyAccent(key) {
 // one-shot rule itself, you commit to how the day looks. The preview shows it
 // live (WYSIWYG). css = filter string for preview + modern canvas; the pixel
 // fallback covers older iOS Safari, which has no canvas ctx.filter.
+// grain = ± noise per channel; vignette = corner-darkening strength; halo = highlight bloom
 const FILM_LOOKS = {
-  none: { label: "None", css: "none" },
-  warm: { label: "Warm", css: "saturate(1.16) contrast(1.05) sepia(.18) brightness(1.02)" },
-  cool: { label: "Cool", css: "saturate(1.05) contrast(1.06) brightness(1.02) hue-rotate(-10deg)" },
-  mono: { label: "Mono", css: "grayscale(1) contrast(1.08) brightness(1.04)" },
-  fade: { label: "Fade", css: "contrast(.9) saturate(.82) brightness(1.09) sepia(.08)" },
+  none: { label: "None", css: "none", grain: 0, vignette: 0, halo: 0 },
+  warm: { label: "Warm", css: "saturate(1.16) contrast(1.05) sepia(.18) brightness(1.02)", grain: 6, vignette: 0.18, halo: 0.14 },
+  cool: { label: "Cool", css: "saturate(1.05) contrast(1.06) brightness(1.02) hue-rotate(-10deg)", grain: 5, vignette: 0.18, halo: 0.08 },
+  mono: { label: "Mono", css: "grayscale(1) contrast(1.08) brightness(1.04)", grain: 10, vignette: 0.22, halo: 0.10 },
+  fade: { label: "Fade", css: "contrast(.9) saturate(.82) brightness(1.09) sepia(.08)", grain: 8, vignette: 0.26, halo: 0.12 },
 };
+const clamp8 = (v) => (v < 0 ? 0 : v > 255 ? 255 : v);
 let CTX_FILTER_OK = null;
 function ctxFilterSupported() {
   if (CTX_FILTER_OK !== null) return CTX_FILTER_OK;
@@ -503,6 +506,69 @@ function applyLookPixels(ctx, w, h, key) {
     d[i] = r; d[i + 1] = g; d[i + 2] = b;
   }
   ctx.putImageData(img, 0, 0);
+}
+
+// After the colour grade, add the analog finish: grain → highlight bloom →
+// vignette → optional light leak. All on-device; makes a grade read as "film".
+function finishGrade(cctx, canvas, lookKey, settings) {
+  const look = FILM_LOOKS[lookKey] || FILM_LOOKS.none;
+  const w = canvas.width, h = canvas.height;
+  // film grain — a fine per-pixel noise
+  if (look.grain) {
+    const img = cctx.getImageData(0, 0, w, h), d = img.data, amt = look.grain;
+    for (let i = 0; i < d.length; i += 4) {
+      const n = (Math.random() - 0.5) * amt * 2;
+      d[i] = clamp8(d[i] + n); d[i + 1] = clamp8(d[i + 1] + n); d[i + 2] = clamp8(d[i + 2] + n);
+    }
+    cctx.putImageData(img, 0, 0);
+  }
+  // halation / bloom — a blurred, screen-blended copy that lifts the highlights
+  if (look.halo && ctxFilterSupported()) {
+    const tmp = document.createElement("canvas"); tmp.width = w; tmp.height = h;
+    const tctx = tmp.getContext("2d");
+    tctx.filter = `brightness(1.6) blur(${Math.max(2, Math.round(Math.max(w, h) * 0.006))}px)`;
+    tctx.drawImage(canvas, 0, 0);
+    cctx.save(); cctx.globalCompositeOperation = "screen"; cctx.globalAlpha = look.halo;
+    cctx.drawImage(tmp, 0, 0); cctx.restore();
+  }
+  // vignette — soft corner darkening
+  if (look.vignette) {
+    const g = cctx.createRadialGradient(w / 2, h / 2, Math.min(w, h) * 0.35, w / 2, h / 2, Math.max(w, h) * 0.72);
+    g.addColorStop(0, "rgba(0,0,0,0)"); g.addColorStop(1, `rgba(0,0,0,${look.vignette})`);
+    cctx.fillStyle = g; cctx.fillRect(0, 0, w, h);
+  }
+  // optional light leak — random by nature, like a real over-exposed roll
+  if (settings.lightLeaks) drawLightLeak(cctx, w, h);
+}
+
+function drawLightLeak(cctx, w, h) {
+  const corner = Math.floor(Math.random() * 4);
+  const cx = corner % 2 === 0 ? 0 : w, cy = corner < 2 ? 0 : h;
+  const rad = Math.max(w, h) * (0.5 + Math.random() * 0.4);
+  const hue = 18 + Math.random() * 30; // warm orange → red
+  const g = cctx.createRadialGradient(cx, cy, 0, cx, cy, rad);
+  g.addColorStop(0, `hsla(${hue}, 100%, 60%, ${(0.2 + Math.random() * 0.14).toFixed(3)})`);
+  g.addColorStop(0.5, `hsla(${hue}, 100%, 55%, 0.06)`);
+  g.addColorStop(1, "hsla(40, 100%, 50%, 0)");
+  cctx.save(); cctx.globalCompositeOperation = "screen"; cctx.fillStyle = g; cctx.fillRect(0, 0, w, h); cctx.restore();
+}
+
+// baked-in retro date stamp, bottom-right (the disposable-camera signature)
+function drawDateStamp(cctx, w, h, date) {
+  const s = `'${String(date.getFullYear()).slice(-2)} ${date.getMonth() + 1} ${pad(date.getDate())}`;
+  const size = Math.round(Math.max(w, h) * 0.032);
+  const inset = Math.round(size * 0.9);
+  cctx.save();
+  cctx.font = `700 ${size}px "Courier New", ui-monospace, monospace`;
+  cctx.textAlign = "right"; cctx.textBaseline = "alphabetic";
+  cctx.shadowColor = "rgba(255,120,0,.85)"; cctx.shadowBlur = size * 0.55;
+  cctx.fillStyle = "#ff9a3d";
+  cctx.fillText(s, w - inset, h - inset);
+  cctx.restore();
+}
+// the same stamp text for the live preview overlay
+function dateStampText(date = new Date()) {
+  return `'${String(date.getFullYear()).slice(-2)} ${date.getMonth() + 1} ${pad(date.getDate())}`;
 }
 
 /* wrap a string to N canvas lines, ellipsising the overflow */
@@ -796,6 +862,7 @@ async function openCapture() {
   el.innerHTML = `
     <video id="cam" autoplay muted playsinline></video>
     <div class="cap-grid" id="capGrid" ${State.app.settings.showGrid ? "" : "hidden"}><i></i><i></i><i></i><i></i></div>
+    <div class="cap-datestamp" id="capStamp" ${State.app.settings.dateStamp ? "" : "hidden"}>${dateStampText()}</div>
     <div class="cap-top">
       <button class="x" id="cancel">${svgIcon("close")}</button>
       <span class="tiny" style="color:#fff;opacity:.8">One shot · no retake</span>
@@ -929,7 +996,11 @@ async function commitShot() {
   if (facing === "user") { cctx.translate(canvas.width, 0); cctx.scale(-1, 1); }
   cctx.drawImage(video, 0, 0, canvas.width, canvas.height);
   cctx.filter = "none";
+  cctx.setTransform(1, 0, 0, 1, 0, 0); // drop any mirror so effects & stamp draw upright
   if (look !== "none" && !useCtxFilter) applyLookPixels(cctx, canvas.width, canvas.height, look);
+  // analog finish (grain/bloom/vignette/leak) then the retro date stamp — all baked in
+  finishGrade(cctx, canvas, look, State.app.settings);
+  if (State.app.settings.dateStamp) drawDateStamp(cctx, canvas.width, canvas.height, new Date());
 
   // flash + freeze the frame in place
   $("#flash").classList.add("go");
@@ -1327,29 +1398,61 @@ async function playFilm() {
 }
 
 /* best-effort film export → share sheet / download (post-reveal only) */
+// If video rendering can't run (or silently produces nothing — a known iOS
+// installed-PWA MediaRecorder bug on warm launches), fall back to the poster so
+// the payoff is never lost.
 async function exportFilm(days, bitmaps, frameMs, xfade, W, H) {
-  toast("Rendering film…", 3000);
   const canvas = document.createElement("canvas"); canvas.width = W; canvas.height = H;
   const ctx = canvas.getContext("2d");
-  const stream = canvas.captureStream(30);
-  const mime = ["video/mp4", "video/webm;codecs=vp9", "video/webm"].find((m) => MediaRecorder.isTypeSupported?.(m)) || "video/webm";
-  const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 8_000_000 });
+  const mime = ["video/mp4", "video/webm;codecs=vp9", "video/webm"].find((m) => MediaRecorder.isTypeSupported?.(m));
+  // pre-flight: no recorder, no capture stream, or no encodable mime → poster
+  if (typeof MediaRecorder === "undefined" || typeof canvas.captureStream !== "function" || !mime) {
+    toast("This device can't render video — saving a poster instead.", 3500);
+    return exportPoster(days);
+  }
+
+  let fellBack = false;
+  const fallback = (msg) => {
+    if (fellBack) return; fellBack = true;
+    toast(msg || "Couldn't render the film here — saving a poster instead. Reopening the app fresh (or Android) renders the video.", 4500);
+    exportPoster(days);
+  };
+
+  let rec, stream;
+  try {
+    stream = canvas.captureStream(30);
+    rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 8_000_000 });
+  } catch { return fallback(); }
+
+  toast("Rendering film…", 3000);
   const chunks = [];
-  rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+  const totalMs = frameMs * days.length;
+  let watchdog = null, finished = false;
+  const stopTracks = () => { try { stream.getTracks().forEach((t) => t.stop()); } catch {} };
+
+  rec.ondataavailable = (e) => e.data && e.data.size && chunks.push(e.data);
+  rec.onerror = () => { clearTimeout(watchdog); stopTracks(); fallback(); };
   rec.onstop = async () => {
+    clearTimeout(watchdog); stopTracks();
+    const size = chunks.reduce((n, c) => n + c.size, 0);
+    if (!size) return fallback(); // recorder produced nothing — the iOS warm-launch failure
     const blob = new Blob(chunks, { type: mime });
     const ext = mime.includes("mp4") ? "mp4" : "webm";
     const file = new File([blob], `sundial-year.${ext}`, { type: mime });
-    if (navigator.canShare?.({ files: [file] })) { try { await navigator.share({ files: [file], title: "My Sundial year" }); return; } catch {} }
+    if (navigator.canShare?.({ files: [file] })) { try { await navigator.share({ files: [file], title: "My Sundial year" }); return; } catch (e) { if (e.name === "AbortError") return; } }
     const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = file.name; a.click(); setTimeout(() => URL.revokeObjectURL(url), 5000);
   };
-  rec.start();
+
+  try { rec.start(); } catch { stopTracks(); return fallback(); }
+  // watchdog: if it hasn't finished well past the expected runtime, bail to poster
+  watchdog = setTimeout(() => { if (!finished) { try { rec.state !== "inactive" && rec.stop(); } catch { fallback(); } } }, totalMs + 8000);
+
   // drive the same painter in real time so the recorder captures the crossfades
-  const totalMs = frameMs * days.length;
   const t0 = performance.now();
   const step = () => {
+    if (fellBack) return;
     const t = performance.now() - t0;
-    if (t >= totalMs) { paintFilm(ctx, W, H, days, bitmaps, totalMs - 1, frameMs, xfade); rec.stop(); return; }
+    if (t >= totalMs) { finished = true; paintFilm(ctx, W, H, days, bitmaps, totalMs - 1, frameMs, xfade); try { rec.state !== "inactive" && rec.stop(); } catch { fallback(); } return; }
     paintFilm(ctx, W, H, days, bitmaps, t, frameMs, xfade);
     requestAnimationFrame(step);
   };
@@ -1398,6 +1501,14 @@ async function openSettings() {
         <div class="look-row" id="lookRow">${Object.entries(FILM_LOOKS).map(([k, l]) => `<button class="look-pill ${s.filmLook === k ? "on" : ""}" data-k="${k}">${l.label}</button>`).join("")}</div>
       </div>
       <div class="settings-row">
+        <div><div class="lbl">Date stamp</div><div class="sub">A retro amber date burned into the corner</div></div>
+        <button class="switch ${s.dateStamp ? "on" : ""}" role="switch" aria-checked="${s.dateStamp}" aria-label="Date stamp" id="setStamp"><span class="knob"></span></button>
+      </div>
+      <div class="settings-row">
+        <div><div class="lbl">Light leaks</div><div class="sub">A random warm flare, like an over-exposed roll</div></div>
+        <button class="switch ${s.lightLeaks ? "on" : ""}" role="switch" aria-checked="${s.lightLeaks}" aria-label="Light leaks" id="setLeaks"><span class="knob"></span></button>
+      </div>
+      <div class="settings-row">
         <div><div class="lbl">Preview the film early</div><div class="sub">Breaks the seal — for testing only</div></div>
         <button class="switch ${s.devPreview ? "on" : ""}" role="switch" aria-checked="${s.devPreview}" aria-label="Preview the film early" id="setDev"><span class="knob"></span></button>
       </div>
@@ -1435,6 +1546,8 @@ async function openSettings() {
       haptic(6); await State.save();
     };
   });
+  $("#setStamp", bg).onclick = async () => { s.dateStamp = !s.dateStamp; flip($("#setStamp", bg), s.dateStamp); await State.save(); };
+  $("#setLeaks", bg).onclick = async () => { s.lightLeaks = !s.lightLeaks; flip($("#setLeaks", bg), s.lightLeaks); await State.save(); };
   $("#setDev", bg).onclick = async () => { s.devPreview = !s.devPreview; flip($("#setDev", bg), s.devPreview); toast(s.devPreview ? "Seal broken (preview on)" : "Seal restored"); await State.save(); render(); };
   $("#backup", bg).onclick = async () => {
     haptic(6);
@@ -1459,13 +1572,33 @@ async function openSettings() {
     inp.click();
   };
   $("#notif", bg).onclick = async () => {
+    let scheduled = false;
     if ("Notification" in window) {
       const perm = await Notification.requestPermission();
-      if (perm === "granted") { try { new Notification("Sundial", { body: "You'll be reminded here. For a daily alarm, add the Shortcut — see the README." }); } catch {} }
+      if (perm === "granted") {
+        scheduled = await registerDailyNudge(); // serverless daily reminder on Android
+        try { new Notification("Sundial", { body: scheduled ? "You'll get one gentle nudge a day." : "Reminders on. For a daily alarm on iPhone, add the Shortcut — see below." }); } catch {}
+      }
     }
     close();
-    showNotifHelp();
+    if (scheduled) toast("Daily reminder is on.");
+    else showNotifHelp(); // iOS can't self-schedule — walk the Shortcuts recipe
   };
+}
+
+// Serverless daily reminder. On Chrome/Android an installed PWA can register a
+// Periodic Background Sync that fires the nudge with no server. iOS has no such
+// API, so it returns false and we fall back to the Shortcuts recipe.
+async function registerDailyNudge() {
+  try {
+    if (!("serviceWorker" in navigator)) return false;
+    const reg = await navigator.serviceWorker.ready;
+    if (!("periodicSync" in reg)) return false;
+    const status = await navigator.permissions?.query?.({ name: "periodic-background-sync" }).catch(() => null);
+    if (status && status.state === "denied") return false;
+    await reg.periodicSync.register("daily-nudge", { minInterval: 20 * 3600 * 1000 }); // ~once a day
+    return true;
+  } catch { return false; }
 }
 
 function showNotifHelp() {

@@ -1,5 +1,5 @@
 // Sundial service worker — offline app shell. Photos live in IndexedDB, never here.
-const CACHE = "sundial-v9";
+const CACHE = "sundial-v10";
 const SHELL = [
   "./",
   "./index.html",
@@ -51,6 +51,38 @@ self.addEventListener("fetch", (e) => {
       return cached || net;
     })
   );
+});
+
+// Serverless daily reminder (Chrome/Android). Fires ~once a day; nudges only if
+// today hasn't been captured yet. Reads the photos store directly — no network.
+function hasShotToday() {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (v) => { if (!done) { done = true; resolve(v); } };
+    try {
+      const r = indexedDB.open("sundial", 1);
+      r.onsuccess = () => {
+        const db = r.result;
+        if (!db.objectStoreNames.contains("photos")) return finish(false);
+        const d = new Date();
+        const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+        const g = db.transaction("photos", "readonly").objectStore("photos").getKey(key);
+        g.onsuccess = () => finish(!!g.result);
+        g.onerror = () => finish(false);
+      };
+      r.onerror = () => finish(false);
+    } catch { finish(false); }
+  });
+}
+self.addEventListener("periodicsync", (e) => {
+  if (e.tag !== "daily-nudge") return;
+  e.waitUntil((async () => {
+    if (await hasShotToday()) return; // already captured — stay quiet
+    return self.registration.showNotification("Sundial", {
+      body: "One shot for today — before the window closes.",
+      icon: "./icons/icon-192.png", badge: "./icons/icon-192.png", tag: "daily-nudge",
+    });
+  })());
 });
 
 // If the daily Shortcut ever sends a push (optional/advanced), show it.

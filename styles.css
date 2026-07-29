@@ -373,6 +373,14 @@ ol.steps b { color: var(--ink); }
 .cap-top .x svg { width: 20px; height: 20px; }
 .cap-top .x.on { background: rgba(255,255,255,.28); color: var(--sun-hot); }
 
+/* live date-stamp preview (WYSIWYG for the baked-in stamp) */
+.cap-datestamp {
+  position: absolute; z-index: 1; right: 20px; bottom: calc(var(--safe-bottom) + 150px);
+  font-family: "Courier New", ui-monospace, monospace; font-weight: 700; font-size: 20px;
+  color: #ff9a3d; text-shadow: 0 0 8px rgba(255,120,0,.85); letter-spacing: .02em; pointer-events: none;
+}
+.cap-datestamp[hidden] { display: none; }
+
 /* ---------- viewer: the moment's sound ---------- */
 .v-sound {
   align-self: flex-start; display: inline-flex; align-items: center; gap: 9px;
