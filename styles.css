@@ -392,6 +392,16 @@ ol.steps b { color: var(--ink); }
 .swatch.on { border-color: #fff; transform: scale(1.08); }
 .swatch:active { transform: scale(.9); }
 
+/* ---------- film look picker ---------- */
+.look-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.look-pill {
+  font-size: 12px; font-weight: 600; padding: 6px 11px; border-radius: 999px;
+  background: #1b2130; color: var(--ink-dim); border: 1px solid var(--line);
+  transition: background .15s ease, color .15s ease, transform .12s ease;
+}
+.look-pill.on { background: rgba(255,154,61,.16); color: var(--sun-hot); border-color: transparent; }
+.look-pill:active { transform: scale(.94); }
+
 /* ---------- storage-low nudge ---------- */
 .lowstore {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;

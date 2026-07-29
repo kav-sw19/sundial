@@ -187,7 +187,7 @@ const State = {
   async load() {
     const DEFAULT_SETTINGS = {
       showStrip: true, devPreview: false, notifyTime: "09:00",
-      captureSound: false, showGrid: false, accent: "amber",
+      captureSound: false, showGrid: false, accent: "amber", filmLook: "none",
     };
     this.app = (await DB.getMeta("app")) || {
       onboarded: false, firstCaptureDate: null, lastNudgeDate: null,
@@ -465,6 +465,44 @@ function applyAccent(key) {
   const r = document.documentElement.style;
   r.setProperty("--sun", a.sun);
   r.setProperty("--sun-hot", a.hot);
+}
+
+/* ---------------------------------------------------------------- film looks */
+// A colour grade baked into the shot at capture. It's permanent — like the
+// one-shot rule itself, you commit to how the day looks. The preview shows it
+// live (WYSIWYG). css = filter string for preview + modern canvas; the pixel
+// fallback covers older iOS Safari, which has no canvas ctx.filter.
+const FILM_LOOKS = {
+  none: { label: "None", css: "none" },
+  warm: { label: "Warm", css: "saturate(1.16) contrast(1.05) sepia(.18) brightness(1.02)" },
+  cool: { label: "Cool", css: "saturate(1.05) contrast(1.06) brightness(1.02) hue-rotate(-10deg)" },
+  mono: { label: "Mono", css: "grayscale(1) contrast(1.08) brightness(1.04)" },
+  fade: { label: "Fade", css: "contrast(.9) saturate(.82) brightness(1.09) sepia(.08)" },
+};
+let CTX_FILTER_OK = null;
+function ctxFilterSupported() {
+  if (CTX_FILTER_OK !== null) return CTX_FILTER_OK;
+  try {
+    const x = document.createElement("canvas").getContext("2d");
+    x.filter = "grayscale(1)"; CTX_FILTER_OK = x.filter === "grayscale(1)";
+  } catch { CTX_FILTER_OK = false; }
+  return CTX_FILTER_OK;
+}
+function lookCss(key) { const l = FILM_LOOKS[key]; return l && l.css !== "none" ? l.css : ""; }
+// per-pixel approximation of each look, for browsers without canvas ctx.filter
+function applyLookPixels(ctx, w, h, key) {
+  if (key === "none" || !FILM_LOOKS[key]) return;
+  const clamp = (v) => (v < 0 ? 0 : v > 255 ? 255 : v);
+  const img = ctx.getImageData(0, 0, w, h), d = img.data;
+  for (let i = 0; i < d.length; i += 4) {
+    let r = d[i], g = d[i + 1], b = d[i + 2];
+    if (key === "mono") { const l = 0.299 * r + 0.587 * g + 0.114 * b; r = g = b = clamp((l - 128) * 1.08 + 128 + 10); }
+    else if (key === "warm") { r = clamp(r * 1.08 + 8); g = clamp(g * 1.02); b = clamp(b * 0.9); }
+    else if (key === "cool") { r = clamp(r * 0.92); b = clamp(b * 1.1 + 6); }
+    else if (key === "fade") { r = clamp(r * 0.9 + 22); g = clamp(g * 0.9 + 20); b = clamp(b * 0.9 + 16); }
+    d[i] = r; d[i + 1] = g; d[i + 2] = b;
+  }
+  ctx.putImageData(img, 0, 0);
 }
 
 /* wrap a string to N canvas lines, ellipsising the overflow */
@@ -822,6 +860,8 @@ async function startCam() {
   }
   // mirror the front camera so the preview reads like a mirror
   video.classList.toggle("mirror", facing === "user");
+  // live look preview (WYSIWYG) — the same grade is baked in at capture
+  video.style.filter = lookCss(State.app.settings.filmLook);
   await discoverLenses();
   updateLensUI();
 }
@@ -881,9 +921,15 @@ async function commitShot() {
   const scale = Math.min(1, CONFIG.PHOTO_MAX_DIM / Math.max(vw, vh));
   canvas.width = Math.round(vw * scale); canvas.height = Math.round(vh * scale);
   const cctx = canvas.getContext("2d");
+  // bake in the chosen film look — via canvas filter where supported, else pixels
+  const look = State.app.settings.filmLook || "none";
+  const useCtxFilter = look !== "none" && ctxFilterSupported();
+  if (useCtxFilter) cctx.filter = lookCss(look);
   // mirror the front camera so the saved frame matches the mirrored preview
   if (facing === "user") { cctx.translate(canvas.width, 0); cctx.scale(-1, 1); }
   cctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  cctx.filter = "none";
+  if (look !== "none" && !useCtxFilter) applyLookPixels(cctx, canvas.width, canvas.height, look);
 
   // flash + freeze the frame in place
   $("#flash").classList.add("go");
@@ -1347,6 +1393,10 @@ async function openSettings() {
         <div><div class="lbl">Accent</div><div class="sub">The colour of the sun &amp; dial</div></div>
         <div class="accent-row" id="accentRow">${Object.entries(ACCENTS).map(([k, a]) => `<button class="swatch ${s.accent === k ? "on" : ""}" data-k="${k}" aria-label="${a.label}" style="background:linear-gradient(180deg, ${a.hot}, ${a.sun})"></button>`).join("")}</div>
       </div>
+      <div class="settings-row" style="flex-wrap:wrap;gap:10px">
+        <div><div class="lbl">Film look</div><div class="sub">A colour grade baked into each shot — permanent</div></div>
+        <div class="look-row" id="lookRow">${Object.entries(FILM_LOOKS).map(([k, l]) => `<button class="look-pill ${s.filmLook === k ? "on" : ""}" data-k="${k}">${l.label}</button>`).join("")}</div>
+      </div>
       <div class="settings-row">
         <div><div class="lbl">Preview the film early</div><div class="sub">Breaks the seal — for testing only</div></div>
         <button class="switch ${s.devPreview ? "on" : ""}" role="switch" aria-checked="${s.devPreview}" aria-label="Preview the film early" id="setDev"><span class="knob"></span></button>
@@ -1376,6 +1426,13 @@ async function openSettings() {
       s.accent = sw.dataset.k;
       $("#accentRow", bg).querySelectorAll(".swatch").forEach((o) => o.classList.toggle("on", o === sw));
       applyAccent(s.accent); haptic(6); await State.save(); render();
+    };
+  });
+  $("#lookRow", bg).querySelectorAll(".look-pill").forEach((pill) => {
+    pill.onclick = async () => {
+      s.filmLook = pill.dataset.k;
+      $("#lookRow", bg).querySelectorAll(".look-pill").forEach((o) => o.classList.toggle("on", o === pill));
+      haptic(6); await State.save();
     };
   });
   $("#setDev", bg).onclick = async () => { s.devPreview = !s.devPreview; flip($("#setDev", bg), s.devPreview); toast(s.devPreview ? "Seal broken (preview on)" : "Seal restored"); await State.save(); render(); };
