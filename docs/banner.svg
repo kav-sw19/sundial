@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="320" viewBox="0 0 1200 320" role="img" aria-label="Sundial: one honest photo a day">
+  <defs>
+    <radialGradient id="glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#ffb347" stop-opacity=".55"/>
+      <stop offset="100%" stop-color="#ffb347" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="sun" cx="40%" cy="35%" r="70%">
+      <stop offset="0%" stop-color="#ffd58a"/>
+      <stop offset="100%" stop-color="#ff9a3c"/>
+    </radialGradient>
+    <linearGradient id="arc" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#ffcf7a"/>
+      <stop offset="100%" stop-color="#ff8c32"/>
+    </linearGradient>
+    <linearGradient id="f1" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#5b2a6e"/><stop offset=".6" stop-color="#ff6f61"/><stop offset="1" stop-color="#ffb36b"/></linearGradient>
+    <linearGradient id="f2" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2c5e9e"/><stop offset="1" stop-color="#9ad0ff"/></linearGradient>
+    <linearGradient id="f3" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0b1026"/><stop offset="1" stop-color="#3b3f7a"/></linearGradient>
+    <linearGradient id="f4" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#b05a7a"/><stop offset="1" stop-color="#f6d365"/></linearGradient>
+    <linearGradient id="f5" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#6c7a86"/><stop offset="1" stop-color="#c9d6df"/></linearGradient>
+  </defs>
+  <rect width="1200" height="320" rx="20" fill="#0f1218"/>
+  <!-- the dial -->
+  <circle cx="190" cy="160" r="150" fill="url(#glow)"/>
+  <circle cx="190" cy="160" r="96" fill="none" stroke="#232938" stroke-width="10"/>
+  <path d="M190 64 A96 96 0 1 1 103 200" fill="none" stroke="url(#arc)" stroke-width="10" stroke-linecap="round"/>
+  <circle cx="103" cy="200" r="9" fill="#fff"/>
+  <circle cx="190" cy="160" r="52" fill="url(#sun)"/>
+  <!-- words -->
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Helvetica, Arial, sans-serif">
+    <text x="380" y="140" font-size="76" font-weight="700" fill="#f3f1ec" letter-spacing="-2">Sundial</text>
+    <text x="382" y="186" font-size="28" fill="#c9c4b8">One honest photo a day.</text>
+    <text x="382" y="222" font-size="20" fill="#8a8f9c" letter-spacing=".5">No feed · no likes · no do-overs</text>
+  </g>
+  <!-- film strip -->
+  <g transform="translate(870 58)">
+    <rect x="-14" y="-14" width="310" height="232" rx="10" fill="#07090d"/>
+    <g fill="#1b1f29">
+      <rect x="-6" y="-8" width="10" height="7" rx="1.5"/><rect x="24" y="-8" width="10" height="7" rx="1.5"/><rect x="54" y="-8" width="10" height="7" rx="1.5"/><rect x="84" y="-8" width="10" height="7" rx="1.5"/><rect x="114" y="-8" width="10" height="7" rx="1.5"/><rect x="144" y="-8" width="10" height="7" rx="1.5"/><rect x="174" y="-8" width="10" height="7" rx="1.5"/><rect x="204" y="-8" width="10" height="7" rx="1.5"/><rect x="234" y="-8" width="10" height="7" rx="1.5"/><rect x="264" y="-8" width="10" height="7" rx="1.5"/>
+      <rect x="-6" y="205" width="10" height="7" rx="1.5"/><rect x="24" y="205" width="10" height="7" rx="1.5"/><rect x="54" y="205" width="10" height="7" rx="1.5"/><rect x="84" y="205" width="10" height="7" rx="1.5"/><rect x="114" y="205" width="10" height="7" rx="1.5"/><rect x="144" y="205" width="10" height="7" rx="1.5"/><rect x="174" y="205" width="10" height="7" rx="1.5"/><rect x="204" y="205" width="10" height="7" rx="1.5"/><rect x="234" y="205" width="10" height="7" rx="1.5"/><rect x="264" y="205" width="10" height="7" rx="1.5"/>
+    </g>
+    <rect x="0" y="6" width="84" height="88" rx="3" fill="url(#f1)"/>
+    <rect x="98" y="6" width="84" height="88" rx="3" fill="url(#f2)"/>
+    <rect x="196" y="6" width="84" height="88" rx="3" fill="#000"/>
+    <text x="238" y="56" font-family="ui-monospace, Menlo, monospace" font-size="11" fill="#5a5f6a" text-anchor="middle">missed</text>
+    <rect x="0" y="108" width="84" height="88" rx="3" fill="url(#f3)"/>
+    <rect x="98" y="108" width="84" height="88" rx="3" fill="url(#f4)"/>
+    <rect x="196" y="108" width="84" height="88" rx="3" fill="url(#f5)"/>
+    <circle cx="42" cy="42" r="12" fill="#fff3d6" opacity=".9"/><circle cx="140" cy="40" r="10" fill="#fff8e6" opacity=".9"/><circle cx="56" cy="136" r="9" fill="#eef" opacity=".9"/><circle cx="140" cy="146" r="11" fill="#fff3d6" opacity=".9"/>
+    <path d="M0 80 Q20 64 42 76 T84 72 V94 H0Z" fill="#1d3b2a" opacity=".9"/><path d="M98 82 H182 V94 H98Z" fill="#14284a" opacity=".9"/><path d="M196 178 Q216 162 238 172 T280 168 V196 H196Z" fill="#2b4a3a" opacity=".9"/>
+  </g>
+</svg>
