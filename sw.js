@@ -1,5 +1,5 @@
 // Sundial service worker — offline app shell. Photos live in IndexedDB, never here.
-const CACHE = "sundial-v10";
+const CACHE = "sundial-v11";
 const SHELL = [
   "./",
   "./index.html",
@@ -32,22 +32,24 @@ self.addEventListener("activate", (e) => {
 });
 
 self.addEventListener("fetch", (e) => {
-  const url = new URL(e.request.url);
-  // Never cache the weather/geocode APIs — always live, fail soft.
-  if (url.hostname.includes("open-meteo.com") || url.hostname.includes("bigdatacloud.net")) {
-    return; // let the network handle it; app code catches failures
-  }
   if (e.request.method !== "GET") return;
-  // App shell: cache-first, fall back to network, update cache in background.
+  const url = new URL(e.request.url);
+  // Only the app shell is ours to cache. Weather and city lookups go straight
+  // to the network (always live, failing soft in the app).
+  if (url.origin !== self.location.origin) return;
+  // App shell: cache-first, fall back to network, refresh the cache behind it.
   e.respondWith(
     caches.match(e.request, { ignoreSearch: true }).then((cached) => {
       const net = fetch(e.request).then((res) => {
-        if (res && res.status === 200 && url.origin === self.location.origin) {
+        if (res && res.status === 200 && res.type === "basic") {
           const clone = res.clone();
           caches.open(CACHE).then((c) => c.put(e.request, clone));
         }
         return res;
-      }).catch(() => cached);
+      }).catch(() =>
+        // offline and not cached: a navigation still gets the app shell
+        cached || (e.request.mode === "navigate" ? caches.match("./index.html") : Response.error())
+      );
       return cached || net;
     })
   );
@@ -61,14 +63,17 @@ function hasShotToday() {
     const finish = (v) => { if (!done) { done = true; resolve(v); } };
     try {
       const r = indexedDB.open("sundial", 1);
+      // never create the database from here: if it doesn't exist yet, an empty
+      // v1 DB would stop the app's own upgrade from ever creating its stores
+      r.onupgradeneeded = () => { try { r.transaction.abort(); } catch {} finish(false); };
       r.onsuccess = () => {
         const db = r.result;
         if (!db.objectStoreNames.contains("photos")) return finish(false);
         const d = new Date();
         const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
         const g = db.transaction("photos", "readonly").objectStore("photos").getKey(key);
-        g.onsuccess = () => finish(!!g.result);
-        g.onerror = () => finish(false);
+        g.onsuccess = () => { finish(!!g.result); db.close(); };
+        g.onerror = () => { finish(false); db.close(); };
       };
       r.onerror = () => finish(false);
     } catch { finish(false); }
@@ -79,13 +84,13 @@ self.addEventListener("periodicsync", (e) => {
   e.waitUntil((async () => {
     if (await hasShotToday()) return; // already captured — stay quiet
     return self.registration.showNotification("Sundial", {
-      body: "One shot for today — before the window closes.",
+      body: "One shot for today, before the window closes.",
       icon: "./icons/icon-192.png", badge: "./icons/icon-192.png", tag: "daily-nudge",
     });
   })());
 });
 
-// If the daily Shortcut ever sends a push (optional/advanced), show it.
+// Tapping the reminder focuses an open Sundial window, or opens one.
 self.addEventListener("notificationclick", (e) => {
   e.notification.close();
   e.waitUntil(

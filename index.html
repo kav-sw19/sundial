@@ -2,26 +2,33 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no" />
-  <title>Sundial</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Sundial · one honest photo a day</title>
   <meta name="description" content="One honest photo a day. Sealed until your year is done." />
-  <link rel="manifest" href="manifest.webmanifest" />
+  <meta name="color-scheme" content="dark" />
   <meta name="theme-color" content="#0e1116" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" href="icons/icon-192.png" type="image/png" />
+  <link rel="apple-touch-icon" href="icons/icon-180.png" />
   <link rel="stylesheet" href="styles.css" />
   <!-- iOS standalone -->
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Sundial" />
-  <link rel="apple-touch-icon" href="icons/icon-180.png" />
+  <!-- social preview -->
+  <meta property="og:title" content="Sundial" />
+  <meta property="og:description" content="One honest photo a day. Sealed until your year is done." />
+  <meta property="og:image" content="icons/icon-512.png" />
 </head>
 <body>
-  <div id="app" aria-live="polite">
-    <div class="boot">
+  <div id="app">
+    <div class="boot" aria-label="Loading Sundial">
       <div class="boot-sun"></div>
       <p>Sundial</p>
     </div>
   </div>
+  <noscript><p class="noscript">Sundial needs JavaScript to run.</p></noscript>
   <script src="app.js"></script>
 </body>
 </html>

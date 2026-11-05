@@ -8,7 +8,7 @@ A camera app that only lets you take one photo a day. That's it! One shot, no do
 
 The idea is that because you only get one, you actually stop and think about it. Instead of snapping 40 near-identical photos you'll never look at, you capture the one thing that mattered that day: your coffee, your kid, the sky, a mess on the floor, whatever it was.
 
-Then at the end of the year, the app stitches all 365 photos together into a short film, one quick frame per day, so you can watch your whole year play back in about half a minute.
+Then at the end of the year, the app stitches all 365 photos together into a short film, one frame per day with a gentle dissolve between them, so you can watch your whole year play back in about three and a half minutes. Then the next year begins.
 
 It's the opposite of a normal camera or Instagram. There's no feed, no likes, no endless scrolling. Just one honest picture a day, and a little movie of your life at the end of it.
 
@@ -62,6 +62,7 @@ and **nothing to pay for, ever**. Every photo lives only on your own phone.
 | 🎞️ **The year is sealed** | You can't browse this year's shots or watch the film until the 365 days close. | You build it blind — the reveal is the payoff. |
 | 🕐 **This day, last year** | Before you shoot, you see the same date one year ago. | A single gentle look back, and the app's daily nudge. |
 | 🌘 **It quietly remembers** | Weather, city, and moon phase are logged with each frame and surface only as subtle overlays in the film. | Ambient memory — never a dashboard, never stats to chase. |
+| 🔁 **Year after year** | When a year unseals, the next one starts sealed. Every finished year stays on the Film screen. | A life in chapters, each one built blind. |
 
 ---
 
@@ -95,7 +96,9 @@ See [Make it your own](#make-it-your-own-deploy-your-own-copy).)
 
 Sundial sends a single gentle nudge each day to take your shot (and to peek at last year's).
 
-- **Android:** the app can schedule this itself — just allow notifications when asked.
+- **Android:** install the app, then **⚙️ Settings → Daily reminder → Set up** and allow
+  notifications. Chrome schedules it on its own (no server); it only nudges if you haven't shot yet.
+  Tap **Turn off** in the same place to stop it.
 - **iPhone:** Apple doesn't let a web app wake itself on a timer, so you set up a free one-time
   automation using the built-in **Shortcuts** app. In Sundial, go to **⚙️ Settings → Daily reminder →
   Set up** for the exact steps, or:
@@ -112,8 +115,10 @@ Sundial sends a single gentle nudge each day to take your shot (and to peek at l
 2. **You see one year ago today** — the same date's photo from last year, with its weather, city, and
    moon. (Empty for your first year — it fills in as you go.)
 3. **The ring shows how much day is left.** Early on it's calm; as midnight nears it turns urgent.
-4. **You take your shot** when the moment feels right. Tap the shutter **once** — that's it. It's
-   saved instantly, no confirm screen, no retake.
+4. **You take your shot** when the moment feels right. The viewfinder shows exactly the 4:5 frame
+   that gets kept, with your chosen film look applied live (tap the **look** button beside the
+   shutter to change it). Tap the shutter **once** — that's it. It's saved instantly, no confirm
+   screen, no retake.
 5. **Optionally tap "Save to Photos"** to also drop a copy into your phone's gallery.
 6. **You're done for the day.** If midnight passes and you never shot, that day becomes a black frame.
 
@@ -127,13 +132,18 @@ That's the point: you're building it blind.
 - **When does it unlock?** By default, 365 days after your **first** photo. (Start in July, reveal
   next July.) You can switch this to a calendar year that reveals on **Dec 31** — see
   [Customize it](#customize-it).
-- **What's in it?** Every day of the year, one frame each, ~30 seconds total. Missed days appear as
-  **black frames with the date** — honest gaps. Weather, city, and moon phase fade in subtly over each
-  frame.
+- **What's in it?** Every day of the year, one frame each (a little over half a second per day, so
+  about 3½ minutes in all). Missed days appear as **black frames with the date** — honest gaps.
+  Weather, city, moon phase and your caption fade in subtly over each frame. Tap the film to pause.
+- **And then?** The next year starts sealed the day the last one opens. Every unsealed year stays on
+  the **Film** screen, so you can rewatch 2025 while 2026 is still being built. A small sun on the
+  film button tells you when a new one is ready.
 - **Watching it early (for testing):** **⚙️ Settings → Preview the film early** breaks the seal so you
   can check it works. Turn it back off to reseal.
-- **Saving the film:** after it plays (once unlocked), a **Save film** button renders it to a video
-  you can keep or share.
+- **Saving the film:** after it plays (once unlocked), **Save film** re-plays it while recording a
+  video you can keep or share (keep the screen open; there's a progress readout and a Cancel button).
+  If your browser can't record video, you get the **poster** instead: one printable image with every
+  day of the year as a tile.
 
 ---
 
@@ -147,8 +157,9 @@ That's the point: you're building it blind.
 - **A year is precious and it's local-only — back it up.** Two ways: tap **Save to Photos** after each
   shot so there's a copy in your gallery, and use **⚙️ Settings → Back up your year** to save *everything*
   (photos, captions, ambient data, and any sound) into one `.zip`. Move that file somewhere safe; on a
-  new phone, **Settings → Restore from a backup** brings the whole year back. And **don't** clear the
-  site's data or delete the home-screen icon, or the in-app photos are gone.
+  new phone, **Settings → Restore from a backup** (or **I have a backup** on the welcome screen) brings
+  the whole year back. Settings shows when you last backed up, and nudges you if it's been a while.
+  And **don't** clear the site's data or delete the home-screen icon, or the in-app photos are gone.
 
 ---
 
@@ -194,7 +205,7 @@ Everything tweakable lives at the top of **`app.js`**:
 const CONFIG = {
   YEAR_MODE: "rolling",    // "rolling" = 365 days from your FIRST photo.
                            // "calendar" = Jan 1 → Dec 31; film reveals on Dec 31.
-  FILM_FRAME_MS: 550,      // how long each frame holds in the film (calm, not snappy)
+  FILM_FRAME_MS: 550,      // how long each frame holds (550 ms x 365 days = about 3.5 min)
   FILM_CROSSFADE_MS: 300,  // gentle dissolve from one day into the next
   PHOTO_MAX_DIM: 1600,     // longest stored edge in px (quality vs. storage)
   JPEG_QUALITY: 0.86,      // 0–1
@@ -203,11 +214,11 @@ const CONFIG = {
 ```
 
 Other easy touches: colours and type live in **`styles.css`** (the `:root` variables at the top);
-the onboarding copy and the six rules are in the `renderOnboarding()` function in **`app.js`**.
+the onboarding copy and its four rules are in the `renderOnboarding()` function in **`app.js`**.
 
 After editing, re-deploy (push to your fork, or re-drop on Netlify). If a change doesn't appear on
 your phone, it's the offline cache — fully close and reopen the app, and bump the `CACHE` name in
-**`sw.js`** (e.g. `sundial-v2`) to force an update.
+**`sw.js`** (e.g. `sundial-v11` → `sundial-v12`) to force an update; the app then shows a **Reload** banner.
 
 ---
 
@@ -228,8 +239,16 @@ denied location or were offline, the photo still saves — just without those ov
 honest record of your year.
 
 **Will I lose my photos?** Only if you clear the site's website data, delete the home-screen icon, or
-your phone aggressively reclaims storage. Keep the icon installed and use **Save to Photos** as a
-backup.
+your phone aggressively reclaims storage. Keep the icon installed, and export a backup now and then
+(**⚙️ Settings → Back up your year**).
+
+**My backup won't restore.** Use the `.zip` Sundial made. A backup you unzipped and re-zipped also
+works in current Safari and Chrome. If it says "That isn't a Sundial backup", the file is missing its
+`manifest.json`.
+
+**The film stutters or the screen goes dark while it plays.** Photos are decoded a few seconds ahead
+as the film plays, so a very slow phone may pause briefly to catch up. That's expected and keeps
+memory low.
 
 **Can two people share one deployment?** Yes — data is per-device, so everyone who installs the same
 URL gets their own private, separate year on their own phone.

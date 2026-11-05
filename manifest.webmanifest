@@ -1,5 +1,6 @@
 {
-  "name": "Sundial — one photo a day",
+  "id": "./",
+  "name": "Sundial: one photo a day",
   "short_name": "Sundial",
   "description": "One honest photo a day. Sealed until your year is done.",
   "start_url": "./?source=pwa",
@@ -8,6 +9,7 @@
   "orientation": "portrait",
   "background_color": "#0e1116",
   "theme_color": "#0e1116",
+  "categories": ["photo", "lifestyle"],
   "icons": [
     { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
     { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
