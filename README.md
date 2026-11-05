@@ -24,12 +24,10 @@ You can't rewatch the year while you're living it. It stays **sealed**, a time c
 
 There's no feed, no likes, no account and no server. Your photos stay on your phone.
 
-<table>
-<tr>
-<td width="34%" valign="top">
-<img alt="A year of days playing back as a film, dissolving from one to the next, with the date, weather, city and moon phase on each frame" src="docs/film.gif" width="100%">
-</td>
-<td valign="top">
+<div align="center">
+<img alt="A year of days playing back as a film, dissolving from one to the next, with the date, weather, city and moon phase on each frame" src="docs/film.gif" width="300">
+<br><sub>A year, played back. Each day dissolves into the next. Missed days are black frames.</sub>
+</div>
 
 ### The rules
 
@@ -42,10 +40,6 @@ There's no feed, no likes, no account and no server. Your photos stay on your ph
 | 🕐 | **One year ago today.** Before you shoot, you see this date last year. | One gentle look back each day. |
 | 🌘 | **It quietly remembers.** Weather, city and moon phase ride along with every frame. | Memory without a dashboard. |
 | 🔁 | **Year after year.** When a year unseals, the next starts sealed. | A life in chapters, each built blind. |
-
-</td>
-</tr>
-</table>
 
 **[▶ Open Sundial on your phone](https://kav-sw19.github.io/sundial/)** and add it to your home screen ([how](#get-it-on-your-phone)).
 
